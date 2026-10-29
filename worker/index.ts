@@ -57,6 +57,18 @@ function generateToken(): string {
   return crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
 }
 
+// Clean and sanitize LLM outputs to remove cross-lingual token leaks
+function sanitizeAiResponse(raw: string, persian: boolean): string {
+  if (!raw) return '';
+  let s = raw;
+  if (persian) {
+    s = s.replace(/作用/g, 'اثر');
+    s = s.replace(/[\u4e00-\u9fa5]/g, '');
+    s = s.replace(/\baquí\b/gi, '');
+  }
+  return s.trim();
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'OPTIONS') {
@@ -371,7 +383,8 @@ User prompt: ${prompt || 'Solve this problem step-by-step.'}`;
               image: Array.from(bytes),
             });
 
-            const content = aiRes?.response || (isPersian ? 'تصویر با موفقیت بازخوانی و حل شد.' : 'Image transcribed and solved successfully.');
+            const rawVision = aiRes?.response || (isPersian ? 'تصویر با موفقیت بازخوانی و حل شد.' : 'Image transcribed and solved successfully.');
+            const content = sanitizeAiResponse(rawVision, isPersian);
 
             return jsonResponse({
               success: true,
@@ -398,11 +411,11 @@ User prompt: ${prompt || 'Solve this problem step-by-step.'}`;
             const systemPrompt = isPersian
               ? `شما «نکسورا» (Nexora) هستید؛ یک دستیار مطالعاتی و تحصیلی هوشمند، دقیق، مسلط و صمیمی.
 دستورالعمل‌های حیاتی:
-۱. زبان پاسخ: تمام پاسخ‌های شما باید ۱۰۰٪ به زبان فارسی بسیار روان، شیوا، علمی، سلیس و کاملاً طبیعی باشد. هرگز کلمات اسپانیایی، انگلیسی یا نامفهوم در میان جملات فارسی نیاورید.
-۲. درک و حل مسئله: اگر کاربر سوالی پرسید، سریعاً به اصل موضوع بپردازید و به صورت گام‌به‌گام و مستدل توضیح دهید یا حل کنید.
+۱. زبان پاسخ: تمام پاسخ‌های شما باید ۱۰۰٪ به زبان فارسی رسمی، بسیار روان، شیوا، علمی، سلیس و کاملاً طبیعی با رسم‌الخط استاندارد فارسی باشد. اکیداً از به کار بردن کاراکترهای چینی، لغات اسپانیایی (مانند aquí) یا کلمات انگلیسی در میان متن فارسی خودداری کن و واژگان صحیح فارسی مانند «وارد شود»، «اثر کند»، «اعمال شود» به کار ببر.
+۲. درک و حل مسئله: اگر کاربر سوالی پرسید، سریعاً به اصل موضوع بپردازید و به صورت گام‌به‌گام و مستدل توضیح دهید یا حل کنید و پاسخ نهایی را صریحاً بنویسید.
 ۳. پیوستگی مکالمه: تمام پیام‌های قبلی کاربر را به خاطر بسپارید و پاسخ‌های بعدی را در امتداد گفتگو ارائه دهید.
 ۴. زیبایی و نظم: از تیترهای خوانا، بولت‌پوینت‌های مرتب و فرمول‌های تمیز استفاده کنید.
-۵. آزمون و تست: فقط زمانی سوال تستی مطرح کنید که کاربر صریحاً درخواست تست، آزمون یا کوییز کرده باشد؛ در غیر این صورت به پاسخ مستقیم و روان بپردازید.`
+۵. آزمون و تست: فقط و فقط زمانی سوال تستی مطرح کنید که کاربر صریحاً درخواست تست، آزمون یا کوییز کرده باشد؛ در غیر این صورت به پاسخ مستقیم و روان بپردازید.`
               : `You are Nexora AI, a world-class academic study assistant.
 Rules:
 1. Deliver articulate, elegant explanations in English.
@@ -436,7 +449,8 @@ Rules:
               messages: llmMessages
             });
 
-            const content = aiRes?.response || (isPersian ? 'پاسخ دریافت گردید.' : 'Response received.');
+            const rawContent = aiRes?.response || (isPersian ? 'پاسخ دریافت گردید.' : 'Response received.');
+            const content = sanitizeAiResponse(rawContent, isPersian);
 
             // Generate smart, contextually-relevant follow-up prompts
             const followUps = isPersian ? [
