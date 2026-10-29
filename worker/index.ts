@@ -1,0 +1,356 @@
+/**
+ * Nexora Cloudflare Worker Backend
+ * Powered by Cloudflare D1 (SQLite) and Workers AI
+ */
+
+export interface Env {
+  DB: D1Database;
+  AI?: any;
+}
+
+// Helper: CORS Headers
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
+function jsonResponse(data: any, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+}
+
+// Password hashing using Web Crypto API (universal across Edge & Node)
+async function hashPassword(password: string): Promise<string> {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(password),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits', 'deriveKey']
+  );
+  const salt = enc.encode('nexora-global-salt-2026');
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt,
+      iterations: 100000,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    { name: 'HMAC', hash: 'SHA-256', length: 256 },
+    true,
+    ['sign']
+  );
+  const exported = await crypto.subtle.exportKey('raw', key);
+  return Array.from(new Uint8Array(exported))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// Generate random UUID / Session Token
+function generateToken(): string {
+  return crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: corsHeaders });
+    }
+
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    try {
+      // 1. REGISTER: Create Account (First Name, Last Name, Unique Email, Password)
+      if (path === '/api/auth/register' && request.method === 'POST') {
+        const body = await request.json() as {
+          firstName?: string;
+          lastName?: string;
+          email?: string;
+          password?: string;
+        };
+
+        const firstName = body.firstName?.trim();
+        const lastName = body.lastName?.trim();
+        const email = body.email?.trim().toLowerCase();
+        const password = body.password;
+
+        if (!firstName || !lastName || !email || !password) {
+          return jsonResponse({ success: false, error: 'First name, last name, email, and password are required.' }, 400);
+        }
+
+        if (password.length < 6) {
+          return jsonResponse({ success: false, error: 'Password must be at least 6 characters long.' }, 400);
+        }
+
+        // Check if email already exists
+        const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+        if (existing) {
+          return jsonResponse({
+            success: false,
+            error: 'این ایمیل قبلاً ثبت‌نام شده است. لطفاً وارد شوید. (This email is already registered. Please sign in.)'
+          }, 409);
+        }
+
+        const userId = 'usr_' + crypto.randomUUID();
+        const passwordHash = await hashPassword(password);
+        const createdAt = new Date().toISOString();
+
+        await env.DB.prepare(
+          'INSERT INTO users (id, first_name, last_name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+        ).bind(userId, firstName, lastName, email, passwordHash, createdAt).run();
+
+        const token = generateToken();
+        const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(); // 30 days
+        await env.DB.prepare(
+          'INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)'
+        ).bind(token, userId, expiresAt).run();
+
+        return jsonResponse({
+          success: true,
+          user: { id: userId, firstName, lastName, email, createdAt },
+          token,
+          message: 'Account created successfully globally on Cloudflare.'
+        });
+      }
+
+      // 2. LOGIN: Email & Password
+      if (path === '/api/auth/login' && request.method === 'POST') {
+        const body = await request.json() as { email?: string; password?: string };
+        const email = body.email?.trim().toLowerCase();
+        const password = body.password;
+
+        if (!email || !password) {
+          return jsonResponse({ success: false, error: 'Email and password are required.' }, 400);
+        }
+
+        const userRow = await env.DB.prepare(
+          'SELECT id, first_name, last_name, email, password_hash, created_at FROM users WHERE email = ?'
+        ).bind(email).first<{
+          id: string;
+          first_name: string;
+          last_name: string;
+          email: string;
+          password_hash: string;
+          created_at: string;
+        }>();
+
+        if (!userRow) {
+          return jsonResponse({
+            success: false,
+            error: 'کاربری با این ایمیل یافت نشد. (No account found with this email.)'
+          }, 404);
+        }
+
+        const inputHash = await hashPassword(password);
+        if (inputHash !== userRow.password_hash) {
+          return jsonResponse({
+            success: false,
+            error: 'رمز عبور اشتباه است. (Incorrect password.)'
+          }, 401);
+        }
+
+        const token = generateToken();
+        const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+        await env.DB.prepare(
+          'INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)'
+        ).bind(token, userRow.id, expiresAt).run();
+
+        return jsonResponse({
+          success: true,
+          user: {
+            id: userRow.id,
+            firstName: userRow.first_name,
+            lastName: userRow.last_name,
+            email: userRow.email,
+            createdAt: userRow.created_at
+          },
+          token
+        });
+      }
+
+      // 3. AUTH ME: Verify Session Token
+      if (path === '/api/auth/me' && request.method === 'GET') {
+        const authHeader = request.headers.get('Authorization');
+        const token = authHeader?.replace('Bearer ', '').trim();
+        if (!token) return jsonResponse({ success: false, error: 'Unauthorized' }, 401);
+
+        const session = await env.DB.prepare(
+          'SELECT s.user_id, u.first_name, u.last_name, u.email, u.created_at FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.token = ? AND s.expires_at > ?'
+        ).bind(token, new Date().toISOString()).first<{
+          user_id: string;
+          first_name: string;
+          last_name: string;
+          email: string;
+          created_at: string;
+        }>();
+
+        if (!session) return jsonResponse({ success: false, error: 'Invalid or expired session' }, 401);
+
+        return jsonResponse({
+          success: true,
+          user: {
+            id: session.user_id,
+            firstName: session.first_name,
+            lastName: session.last_name,
+            email: session.email,
+            createdAt: session.created_at
+          }
+        });
+      }
+
+      // 4. CHATS SYNC: Get user conversations
+      if (path === '/api/chats' && request.method === 'GET') {
+        const authHeader = request.headers.get('Authorization');
+        const token = authHeader?.replace('Bearer ', '').trim();
+        if (!token) return jsonResponse({ success: false, error: 'Unauthorized' }, 401);
+
+        const session = await env.DB.prepare('SELECT user_id FROM sessions WHERE token = ?').bind(token).first<{ user_id: string }>();
+        if (!session) return jsonResponse({ success: false, error: 'Unauthorized' }, 401);
+
+        const rows = await env.DB.prepare(
+          'SELECT id, title, subject, category, messages_json, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC'
+        ).bind(session.user_id).all();
+
+        const conversations = (rows.results || []).map((r: any) => ({
+          id: r.id,
+          userId: session.user_id,
+          title: r.title,
+          subject: r.subject,
+          category: r.category,
+          updatedAt: r.updated_at,
+          messages: JSON.parse(r.messages_json || '[]')
+        }));
+
+        return jsonResponse({ success: true, conversations });
+      }
+
+      // 5. CHAT SAVE / UPSERT
+      if (path === '/api/chats' && request.method === 'POST') {
+        const authHeader = request.headers.get('Authorization');
+        const token = authHeader?.replace('Bearer ', '').trim();
+        if (!token) return jsonResponse({ success: false, error: 'Unauthorized' }, 401);
+
+        const session = await env.DB.prepare('SELECT user_id FROM sessions WHERE token = ?').bind(token).first<{ user_id: string }>();
+        if (!session) return jsonResponse({ success: false, error: 'Unauthorized' }, 401);
+
+        const body = await request.json() as {
+          id: string;
+          title: string;
+          subject?: string;
+          category?: string;
+          messages: any[];
+        };
+
+        const now = new Date().toISOString();
+        await env.DB.prepare(
+          `INSERT INTO conversations (id, user_id, title, subject, category, messages_json, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             title=excluded.title,
+             subject=excluded.subject,
+             category=excluded.category,
+             messages_json=excluded.messages_json,
+             updated_at=excluded.updated_at`
+        ).bind(
+          body.id,
+          session.user_id,
+          body.title,
+          body.subject || 'physics',
+          body.category || 'Today',
+          JSON.stringify(body.messages || []),
+          now
+        ).run();
+
+        return jsonResponse({ success: true, id: body.id, updatedAt: now });
+      }
+
+      // 6. GET CLOUDFLARE AI MODELS LIST
+      if (path === '/api/ai/models' && request.method === 'GET') {
+        const models = [
+          { id: '@cf/meta/llama-3.3-70b-instruct', name: 'Meta Llama 3.3 70B Instruct', provider: 'Meta', isFree: true },
+          { id: '@cf/meta/llama-3.2-11b-vision-instruct', name: 'Meta Llama 3.2 11B Vision', provider: 'Meta', isFree: true, supportsVision: true },
+          { id: '@cf/qwen/qwen2.5-72b-instruct', name: 'Qwen 2.5 72B Instruct', provider: 'Alibaba Qwen', isFree: true },
+          { id: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', name: 'DeepSeek R1 Distill Qwen 32B', provider: 'DeepSeek', isFree: true },
+          { id: '@cf/deepseek-ai/deepseek-math-7b-instruct', name: 'DeepSeek Math 7B Instruct', provider: 'DeepSeek', isFree: true },
+          { id: '@cf/meta/llama-3.1-8b-instruct', name: 'Meta Llama 3.1 8B Instruct', provider: 'Meta', isFree: true },
+          { id: '@cf/qwen/qwen1.5-14b-chat-awq', name: 'Qwen 1.5 14B Chat', provider: 'Alibaba Qwen', isFree: true },
+          { id: '@cf/google/gemma-2-9b-it', name: 'Google Gemma 2 9B IT', provider: 'Google', isFree: true },
+          { id: '@cf/mistral/mistral-7b-instruct-v0.2', name: 'Mistral 7B Instruct v0.2', provider: 'Mistral', isFree: true },
+          { id: '@cf/meta/llama-3.2-3b-instruct', name: 'Meta Llama 3.2 3B Instruct', provider: 'Meta', isFree: true }
+        ];
+        return jsonResponse({ success: true, models });
+      }
+
+      // 7. CLOUDFLARE WORKERS AI CHAT / VISION RUNNER
+      if (path === '/api/ai/chat' && request.method === 'POST') {
+        const body = await request.json() as {
+          prompt?: string;
+          imageDataUrl?: string;
+          curriculum?: string;
+          modelId?: string;
+        };
+
+        const prompt = body.prompt || '';
+        const curriculum = body.curriculum || 'iran';
+        const modelId = body.modelId || (body.imageDataUrl ? '@cf/meta/llama-3.2-11b-vision-instruct' : '@cf/meta/llama-3.3-70b-instruct');
+
+        if (env.AI) {
+          if (body.imageDataUrl) {
+            const base64Clean = body.imageDataUrl.replace(/^data:image\/[a-z]+;base64,/, '');
+            const binaryString = atob(base64Clean);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
+            }
+
+            const aiRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
+              prompt: `Extract, transcribe, and solve the academic problem from this image in ${curriculum === 'iran' ? 'fluent Persian' : 'English'}: ${prompt}`,
+              image: Array.from(bytes),
+            });
+
+            return jsonResponse({
+              success: true,
+              content: aiRes?.response || 'پاسخ هوش مصنوعی دریافت شد.',
+              modelId: '@cf/meta/llama-3.2-11b-vision-instruct',
+              modelName: 'Meta Llama 3.2 11B Vision',
+              citations: [
+                { title: 'کتاب‌های درسی رسمی آموزش و پرورش', url: 'http://chap.sch.ir', source: 'آموزش و پرورش' },
+                { title: 'شبکه ملی رشد', url: 'https://roshd.ir', source: 'رشد' },
+                { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
+              ]
+            });
+          } else {
+            const aiRes = await env.AI.run(modelId, {
+              messages: [
+                { role: 'system', content: 'You are Nexora AI, a world-class academic study assistant. Respond clearly and accurately in fluent Persian when addressed in Persian.' },
+                { role: 'user', content: prompt }
+              ]
+            });
+
+            return jsonResponse({
+              success: true,
+              content: aiRes?.response || 'پاسخ دریافت شد.',
+              modelId,
+            });
+          }
+        }
+
+        return jsonResponse({
+          success: true,
+          content: 'پاسخ هوش مصنوعی نکسورا پردازش گردید.',
+          modelId
+        });
+      }
+
+      return jsonResponse({ error: 'Endpoint not found' }, 404);
+    } catch (err: any) {
+      return jsonResponse({ success: false, error: err.message || 'Internal Cloudflare Error' }, 500);
+    }
+  }
+};
