@@ -2,7 +2,7 @@ import type { CloudflareAiModel } from '../types';
 
 export const CLOUDFLARE_FREE_AI_MODELS: CloudflareAiModel[] = [
   {
-    id: '@cf/meta/llama-3.3-70b-instruct',
+    id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
     name: 'Meta Llama 3.3 70B Instruct',
     provider: 'Meta',
     category: 'flagship',
@@ -195,7 +195,7 @@ export const CLOUDFLARE_FREE_AI_MODELS: CloudflareAiModel[] = [
   },
 ];
 
-export const DEFAULT_AI_MODEL_ID = '@cf/meta/llama-3.3-70b-instruct';
+export const DEFAULT_AI_MODEL_ID = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 
 export function getAiModelById(id: string): CloudflareAiModel {
   return (

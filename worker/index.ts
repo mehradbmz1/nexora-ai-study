@@ -6,6 +6,7 @@
 export interface Env {
   DB: D1Database;
   AI?: any;
+  ASSETS?: { fetch: (req: Request | string) => Promise<Response> };
 }
 
 // Helper: CORS Headers
@@ -65,6 +66,11 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // Route static frontend assets if non-API request
+    if (!path.startsWith('/api/') && env.ASSETS) {
+      return await env.ASSETS.fetch(request);
+    }
+
     try {
       // 1. REGISTER: Create Account (First Name, Last Name, Unique Email, Password)
       if (path === '/api/auth/register' && request.method === 'POST') {
@@ -89,7 +95,7 @@ export default {
         }
 
         // Check if email already exists
-        const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+        const existing = await env.DB.prepare('SELECT id FROM nexora_users WHERE email = ?').bind(email).first();
         if (existing) {
           return jsonResponse({
             success: false,
@@ -102,13 +108,13 @@ export default {
         const createdAt = new Date().toISOString();
 
         await env.DB.prepare(
-          'INSERT INTO users (id, first_name, last_name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+          'INSERT INTO nexora_users (id, first_name, last_name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)'
         ).bind(userId, firstName, lastName, email, passwordHash, createdAt).run();
 
         const token = generateToken();
         const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(); // 30 days
         await env.DB.prepare(
-          'INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)'
+          'INSERT INTO nexora_sessions (token, user_id, expires_at) VALUES (?, ?, ?)'
         ).bind(token, userId, expiresAt).run();
 
         return jsonResponse({
@@ -130,7 +136,7 @@ export default {
         }
 
         const userRow = await env.DB.prepare(
-          'SELECT id, first_name, last_name, email, password_hash, created_at FROM users WHERE email = ?'
+          'SELECT id, first_name, last_name, email, password_hash, created_at FROM nexora_users WHERE email = ?'
         ).bind(email).first<{
           id: string;
           first_name: string;
@@ -158,7 +164,7 @@ export default {
         const token = generateToken();
         const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
         await env.DB.prepare(
-          'INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)'
+          'INSERT INTO nexora_sessions (token, user_id, expires_at) VALUES (?, ?, ?)'
         ).bind(token, userRow.id, expiresAt).run();
 
         return jsonResponse({
@@ -181,7 +187,7 @@ export default {
         if (!token) return jsonResponse({ success: false, error: 'Unauthorized' }, 401);
 
         const session = await env.DB.prepare(
-          'SELECT s.user_id, u.first_name, u.last_name, u.email, u.created_at FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.token = ? AND s.expires_at > ?'
+          'SELECT s.user_id, u.first_name, u.last_name, u.email, u.created_at FROM nexora_sessions s JOIN nexora_users u ON s.user_id = u.id WHERE s.token = ? AND s.expires_at > ?'
         ).bind(token, new Date().toISOString()).first<{
           user_id: string;
           first_name: string;
@@ -210,11 +216,11 @@ export default {
         const token = authHeader?.replace('Bearer ', '').trim();
         if (!token) return jsonResponse({ success: false, error: 'Unauthorized' }, 401);
 
-        const session = await env.DB.prepare('SELECT user_id FROM sessions WHERE token = ?').bind(token).first<{ user_id: string }>();
+        const session = await env.DB.prepare('SELECT user_id FROM nexora_sessions WHERE token = ?').bind(token).first<{ user_id: string }>();
         if (!session) return jsonResponse({ success: false, error: 'Unauthorized' }, 401);
 
         const rows = await env.DB.prepare(
-          'SELECT id, title, subject, category, messages_json, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC'
+          'SELECT id, title, subject, category, messages_json, updated_at FROM nexora_conversations WHERE user_id = ? ORDER BY updated_at DESC'
         ).bind(session.user_id).all();
 
         const conversations = (rows.results || []).map((r: any) => ({
@@ -236,7 +242,7 @@ export default {
         const token = authHeader?.replace('Bearer ', '').trim();
         if (!token) return jsonResponse({ success: false, error: 'Unauthorized' }, 401);
 
-        const session = await env.DB.prepare('SELECT user_id FROM sessions WHERE token = ?').bind(token).first<{ user_id: string }>();
+        const session = await env.DB.prepare('SELECT user_id FROM nexora_sessions WHERE token = ?').bind(token).first<{ user_id: string }>();
         if (!session) return jsonResponse({ success: false, error: 'Unauthorized' }, 401);
 
         const body = await request.json() as {
@@ -249,7 +255,7 @@ export default {
 
         const now = new Date().toISOString();
         await env.DB.prepare(
-          `INSERT INTO conversations (id, user_id, title, subject, category, messages_json, updated_at)
+          `INSERT INTO nexora_conversations (id, user_id, title, subject, category, messages_json, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              title=excluded.title,
@@ -270,19 +276,46 @@ export default {
         return jsonResponse({ success: true, id: body.id, updatedAt: now });
       }
 
+      // 5b. CHAT DELETE
+      if (path.startsWith('/api/chats/') && request.method === 'DELETE') {
+        const authHeader = request.headers.get('Authorization');
+        const token = authHeader?.replace('Bearer ', '').trim();
+        if (!token) return jsonResponse({ success: false, error: 'Unauthorized' }, 401);
+
+        const session = await env.DB.prepare('SELECT user_id FROM nexora_sessions WHERE token = ?').bind(token).first<{ user_id: string }>();
+        if (!session) return jsonResponse({ success: false, error: 'Unauthorized' }, 401);
+
+        const chatId = path.replace('/api/chats/', '').trim();
+        await env.DB.prepare('DELETE FROM nexora_conversations WHERE id = ? AND user_id = ?').bind(chatId, session.user_id).run();
+        return jsonResponse({ success: true, message: 'Chat deleted successfully' });
+      }
+
+function normalizeModelId(modelId?: string): string {
+  if (!modelId || modelId === '@cf/meta/llama-3.3-70b-instruct') {
+    return '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+  }
+  if (modelId === '@cf/meta/llama-3.1-8b-instruct' || modelId === '@cf/meta/llama-3-8b-instruct') {
+    return '@cf/meta/llama-3.2-3b-instruct';
+  }
+  if (modelId === '@cf/qwen/qwen2.5-72b-instruct' || modelId === '@cf/qwen/qwen1.5-14b-chat-awq') {
+    return '@cf/qwen/qwen2.5-coder-32b-instruct';
+  }
+  if (modelId.includes('deepseek-math') || modelId.includes('deepseek-coder')) {
+    return '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b';
+  }
+  return modelId;
+}
+
       // 6. GET CLOUDFLARE AI MODELS LIST
       if (path === '/api/ai/models' && request.method === 'GET') {
         const models = [
-          { id: '@cf/meta/llama-3.3-70b-instruct', name: 'Meta Llama 3.3 70B Instruct', provider: 'Meta', isFree: true },
-          { id: '@cf/meta/llama-3.2-11b-vision-instruct', name: 'Meta Llama 3.2 11B Vision', provider: 'Meta', isFree: true, supportsVision: true },
-          { id: '@cf/qwen/qwen2.5-72b-instruct', name: 'Qwen 2.5 72B Instruct', provider: 'Alibaba Qwen', isFree: true },
+          { id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast', name: 'Meta Llama 3.3 70B Instruct', provider: 'Meta', isFree: true, isDefault: true },
           { id: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', name: 'DeepSeek R1 Distill Qwen 32B', provider: 'DeepSeek', isFree: true },
-          { id: '@cf/deepseek-ai/deepseek-math-7b-instruct', name: 'DeepSeek Math 7B Instruct', provider: 'DeepSeek', isFree: true },
-          { id: '@cf/meta/llama-3.1-8b-instruct', name: 'Meta Llama 3.1 8B Instruct', provider: 'Meta', isFree: true },
-          { id: '@cf/qwen/qwen1.5-14b-chat-awq', name: 'Qwen 1.5 14B Chat', provider: 'Alibaba Qwen', isFree: true },
-          { id: '@cf/google/gemma-2-9b-it', name: 'Google Gemma 2 9B IT', provider: 'Google', isFree: true },
-          { id: '@cf/mistral/mistral-7b-instruct-v0.2', name: 'Mistral 7B Instruct v0.2', provider: 'Mistral', isFree: true },
-          { id: '@cf/meta/llama-3.2-3b-instruct', name: 'Meta Llama 3.2 3B Instruct', provider: 'Meta', isFree: true }
+          { id: '@cf/meta/llama-3.2-11b-vision-instruct', name: 'Meta Llama 3.2 11B Vision', provider: 'Meta', isFree: true, supportsVision: true },
+          { id: '@cf/qwen/qwen2.5-coder-32b-instruct', name: 'Qwen 2.5 Coder 32B Instruct', provider: 'Alibaba Qwen', isFree: true },
+          { id: '@cf/meta/llama-3.1-70b-instruct', name: 'Meta Llama 3.1 70B Instruct', provider: 'Meta', isFree: true },
+          { id: '@cf/meta/llama-3.2-3b-instruct', name: 'Meta Llama 3.2 3B Instruct', provider: 'Meta', isFree: true },
+          { id: '@cf/meta/llama-3.2-1b-instruct', name: 'Meta Llama 3.2 1B Instruct', provider: 'Meta', isFree: true }
         ];
         return jsonResponse({ success: true, models });
       }
@@ -298,7 +331,8 @@ export default {
 
         const prompt = body.prompt || '';
         const curriculum = body.curriculum || 'iran';
-        const modelId = body.modelId || (body.imageDataUrl ? '@cf/meta/llama-3.2-11b-vision-instruct' : '@cf/meta/llama-3.3-70b-instruct');
+        const rawModelId = body.modelId || (body.imageDataUrl ? '@cf/meta/llama-3.2-11b-vision-instruct' : '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
+        const modelId = normalizeModelId(rawModelId);
 
         if (env.AI) {
           if (body.imageDataUrl) {
@@ -348,6 +382,9 @@ export default {
         });
       }
 
+      if (env.ASSETS) {
+        return await env.ASSETS.fetch(request);
+      }
       return jsonResponse({ error: 'Endpoint not found' }, 404);
     } catch (err: any) {
       return jsonResponse({ success: false, error: err.message || 'Internal Cloudflare Error' }, 500);
