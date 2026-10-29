@@ -56,6 +56,13 @@ export interface ImageScanResult {
   accuracyScore: number;
 }
 
+export interface QuizQuestion {
+  question: string;
+  options: string[];
+  answerIndex: number;
+  explanation: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -72,6 +79,7 @@ export interface ChatMessage {
     code: string;
   };
   followUps?: string[];
+  quiz?: QuizQuestion;
   language?: 'fa' | 'en' | 'multilingual';
   modelId?: string;
   modelName?: string;

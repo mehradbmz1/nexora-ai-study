@@ -18,6 +18,8 @@ interface VoiceOverlayProps {
   activePersona: VoicePersona;
   onSelectPersona: (p: VoicePersona) => void;
   initialTopicTitle?: string;
+  selectedModelId?: string;
+  conversationHistory?: ChatMessage[];
 }
 
 export const VoiceOverlay: React.FC<VoiceOverlayProps> = ({
@@ -26,6 +28,8 @@ export const VoiceOverlay: React.FC<VoiceOverlayProps> = ({
   activePersona,
   onSelectPersona,
   initialTopicTitle = 'Interactive Oral Study Session',
+  selectedModelId,
+  conversationHistory,
 }) => {
   const [showCaptions, setShowCaptions] = useState<boolean>(true);
   const [showPersonaMenu, setShowPersonaMenu] = useState<boolean>(false);
@@ -45,7 +49,7 @@ export const VoiceOverlay: React.FC<VoiceOverlayProps> = ({
     interrupt,
     triggerExchange,
     cycleState,
-  } = useVoiceEngine(activePersona);
+  } = useVoiceEngine(activePersona, selectedModelId, conversationHistory);
 
   if (!isOpen) return null;
 

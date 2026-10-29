@@ -205,14 +205,20 @@ export function App() {
       setGuestMessages(prev => [...prev, userMessage]);
     }
 
-    // 2. Call AI Reasoning & Multimodal Vision with selected Cloudflare model
+    // 2. Call AI Reasoning & Multimodal Vision with selected Cloudflare model & context history
     setIsLoading(true);
     try {
+      const historyPayload = currentMessages.map(m => ({
+        role: m.role,
+        content: m.content,
+      }));
+
       const aiResponse = await ChatSyncService.sendToAI(
         text,
         imageDataUrl,
         settings.curriculum,
-        settings.selectedModelId
+        settings.selectedModelId,
+        historyPayload
       );
       const activeModelMeta = getAiModelById(settings.selectedModelId);
       const assistantMessage: ChatMessage = {
@@ -311,7 +317,7 @@ export function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-neutral-100/80 dark:bg-[#07080d] text-neutral-900 dark:text-neutral-100 transition-colors duration-300">
+    <div className="flex h-screen w-screen overflow-hidden bg-neutral-50 dark:bg-[#07080d] text-neutral-900 dark:text-neutral-100 transition-colors duration-300">
       {/* Sidebar */}
       <Sidebar
         isOpen={isSidebarOpen}
@@ -383,6 +389,8 @@ export function App() {
         activePersona={settings.persona}
         onSelectPersona={persona => setSettings(prev => ({ ...prev, persona }))}
         initialTopicTitle={activeConversation?.title || 'Voice Study Session'}
+        selectedModelId={settings.selectedModelId}
+        conversationHistory={currentMessages}
       />
 
       {/* Settings Modal */}

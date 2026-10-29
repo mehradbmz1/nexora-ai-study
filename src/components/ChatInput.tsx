@@ -23,8 +23,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [attachedImage, setAttachedImage] = useState<string | null>(null);
+  const [isDictating, setIsDictating] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const recognitionRef = useRef<any>(null);
 
   // Auto-resize textarea height
   useEffect(() => {
@@ -33,6 +35,57 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 180)}px`;
     }
   }, [text]);
+
+  // Clean up speech recognition
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch {}
+      }
+    };
+  }, []);
+
+  const toggleDictation = () => {
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      onLaunchVoiceMode();
+      return;
+    }
+
+    if (isDictating) {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch {}
+      }
+      setIsDictating(false);
+      return;
+    }
+
+    try {
+      const rec = new SpeechRec();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = 'fa-IR';
+
+      rec.onresult = (event: any) => {
+        let transcript = '';
+        for (let i = 0; i < event.results.length; ++i) {
+          transcript += event.results[i][0].transcript;
+        }
+        if (transcript) {
+          setText(prev => (prev ? prev + ' ' : '') + transcript);
+        }
+      };
+
+      rec.onend = () => setIsDictating(false);
+      rec.onerror = () => setIsDictating(false);
+
+      rec.start();
+      recognitionRef.current = rec;
+      setIsDictating(true);
+    } catch {
+      setIsDictating(false);
+    }
+  };
 
   const handleSend = () => {
     if ((!text.trim() && !attachedImage && attachments.length === 0) || isLoading) return;
@@ -200,20 +253,36 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             className="w-full bg-transparent text-sm sm:text-base text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 dark:placeholder-neutral-500 focus:outline-none resize-none max-h-[180px] py-2 px-1 leading-relaxed"
           />
 
-          {/* Right action buttons: Microphone and Send */}
-          <div className="flex items-center gap-1.5 sm:gap-2 mb-1">
-            {/* Voice Mode Button */}
+          {/* Right action buttons: Dictation Mic, Voice Mode, and Send */}
+          <div className="flex items-center gap-1 sm:gap-1.5 mb-1">
+            {/* Live Voice Dictation Button (Transcribe voice to text input) */}
             <button
-              onClick={onLaunchVoiceMode}
-              className="p-2 sm:p-2.5 rounded-xl bg-violet-50 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-900/50 border border-violet-200/60 dark:border-violet-800/50 transition-all active:scale-95 flex items-center gap-1.5"
-              title="Launch Fullscreen Voice Mode"
+              type="button"
+              onClick={toggleDictation}
+              className={`p-2 sm:p-2.5 rounded-xl transition-all active:scale-95 flex items-center justify-center ${
+                isDictating
+                  ? 'bg-rose-500 text-white animate-pulse shadow-md shadow-rose-500/30'
+                  : 'hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+              }`}
+              title={isDictating ? 'Listening... Click to stop voice dictation' : 'Voice Dictation (Speech to text)'}
             >
               <Mic className="w-4 h-4 sm:w-5 sm:h-5" />
-              <span className="hidden sm:inline text-xs font-semibold">Voice</span>
+            </button>
+
+            {/* Fullscreen Voice Mode Button */}
+            <button
+              type="button"
+              onClick={onLaunchVoiceMode}
+              className="p-2 sm:p-2.5 rounded-xl bg-violet-50 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-900/50 border border-violet-200/60 dark:border-violet-800/50 transition-all active:scale-95 flex items-center gap-1.5"
+              title="Launch Fullscreen Spoken Voice Mode"
+            >
+              <Sparkles className="w-4 h-4 text-violet-500" />
+              <span className="hidden sm:inline text-xs font-semibold">Voice Mode</span>
             </button>
 
             {/* Send button */}
             <button
+              type="button"
               onClick={handleSend}
               disabled={(!text.trim() && !attachedImage && attachments.length === 0) || isLoading}
               className={`p-2.5 sm:p-3 rounded-xl transition-all duration-200 flex items-center justify-center active:scale-95 ${

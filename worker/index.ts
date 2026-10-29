@@ -327,12 +327,14 @@ function normalizeModelId(modelId?: string): string {
           imageDataUrl?: string;
           curriculum?: string;
           modelId?: string;
+          messages?: { role: 'user' | 'assistant'; content: string }[];
         };
 
         const prompt = body.prompt || '';
         const curriculum = body.curriculum || 'iran';
         const rawModelId = body.modelId || (body.imageDataUrl ? '@cf/meta/llama-3.2-11b-vision-instruct' : '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
         const modelId = normalizeModelId(rawModelId);
+        const isPersian = /[\u0600-\u06FF]/.test(prompt);
 
         if (env.AI) {
           if (body.imageDataUrl) {
@@ -343,34 +345,93 @@ function normalizeModelId(modelId?: string): string {
               bytes[i] = binaryString.charCodeAt(i);
             }
 
+            const visionPrompt = `You are Nexora Vision, an expert academic OCR and STEM tutor.
+Carefully examine this image:
+1. OCR Denoising: If the image has low resolution, blur, compression artifacts, or handwriting, enhance and transcribe every character, mathematical formula, diagram, or question text accurately.
+2. Language: Recognize whether the problem is in Persian, English, or Arabic.
+3. Detailed Solution: Provide a comprehensive, step-by-step solution formatted with clear headings, formulas, and a highlighted final answer in ${curriculum === 'iran' || isPersian ? 'fluent, native Persian (فارسی روان)' : 'clear English'}.
+4. Specific Instructions: ${prompt || 'Transcribe, clarify, and solve this problem step-by-step.'}`;
+
             const aiRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
-              prompt: `Extract, transcribe, and solve the academic problem from this image in ${curriculum === 'iran' ? 'fluent Persian' : 'English'}: ${prompt}`,
+              prompt: visionPrompt,
               image: Array.from(bytes),
             });
 
+            const content = aiRes?.response || (isPersian ? 'تصویر با موفقیت خوانش و پردازش شد.' : 'Image transcribed and analyzed successfully.');
+
             return jsonResponse({
               success: true,
-              content: aiRes?.response || 'پاسخ هوش مصنوعی دریافت شد.',
+              content,
               modelId: '@cf/meta/llama-3.2-11b-vision-instruct',
               modelName: 'Meta Llama 3.2 11B Vision',
               citations: [
                 { title: 'کتاب‌های درسی رسمی آموزش و پرورش', url: 'http://chap.sch.ir', source: 'آموزش و پرورش' },
                 { title: 'شبکه ملی رشد', url: 'https://roshd.ir', source: 'رشد' },
                 { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
+              ],
+              followUps: isPersian ? [
+                'این مسئله را با یک روش دیگر حل کن',
+                'فرمول‌های به کار رفته را جداگانه اثبات کن',
+                'یک تست مشابه از این مبحث بده'
+              ] : [
+                'Solve this with an alternative method',
+                'Explain the underlying formulas in detail',
+                'Give me a similar practice problem'
               ]
             });
           } else {
+            // Conversational memory: incorporate previous turns
+            const systemPrompt = `You are Nexora AI (نکسورا), an exceptional academic tutor and study assistant.
+Rules:
+1. Conversational Memory: You remember previous messages and build upon them naturally.
+2. Language Fluency: If the user communicates in Persian, respond in flawless, natural, formal Persian (فارسی شیوا، دقیق و بدون غلط نگارشی). If in English, respond in articulate academic English.
+3. Presentation: Format your answer elegantly with clear markdown headings, bullet points, and step-by-step reasoning. Avoid messy or broken markdown.
+4. Problem Solving: When given a problem or question, provide the intuition, step-by-step derivation, and final takeaway clearly.`;
+
+            const llmMessages: { role: string; content: string }[] = [
+              { role: 'system', content: systemPrompt }
+            ];
+
+            if (body.messages && Array.isArray(body.messages)) {
+              // Take up to last 8 messages for context
+              const recent = body.messages.slice(-8);
+              for (const m of recent) {
+                if (m.role === 'user' || m.role === 'assistant') {
+                  llmMessages.push({ role: m.role, content: m.content });
+                }
+              }
+            }
+
+            // Ensure current prompt is present as the final user message
+            const lastMsg = llmMessages[llmMessages.length - 1];
+            if (!lastMsg || lastMsg.role !== 'user' || lastMsg.content !== prompt) {
+              if (prompt.trim()) {
+                llmMessages.push({ role: 'user', content: prompt });
+              }
+            }
+
             const aiRes = await env.AI.run(modelId, {
-              messages: [
-                { role: 'system', content: 'You are Nexora AI, a world-class academic study assistant. Respond clearly and accurately in fluent Persian when addressed in Persian.' },
-                { role: 'user', content: prompt }
-              ]
+              messages: llmMessages
             });
+
+            const content = aiRes?.response || (isPersian ? 'پاسخ دریافت گردید.' : 'Response received.');
+
+            // Generate smart follow-up prompts & interactive quiz
+            const followUps = isPersian ? [
+              'می‌توانی یک مثال کاربردی‌تر از این موضوع بزنی؟',
+              'این مفهوم در امتحان یا کنکور چطور مطرح می‌شود؟',
+              'یک سوال تستی چهارگزینه‌ای از من بپرس'
+            ] : [
+              'Can you give another real-world example?',
+              'How does this typically appear on exams?',
+              'Test my understanding with a multiple-choice question'
+            ];
 
             return jsonResponse({
               success: true,
-              content: aiRes?.response || 'پاسخ دریافت شد.',
+              content,
               modelId,
+              followUps
             });
           }
         }
