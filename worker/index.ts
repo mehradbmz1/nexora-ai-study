@@ -334,7 +334,10 @@ function normalizeModelId(modelId?: string): string {
         const curriculum = body.curriculum || 'iran';
         const rawModelId = body.modelId || (body.imageDataUrl ? '@cf/meta/llama-3.2-11b-vision-instruct' : '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
         const modelId = normalizeModelId(rawModelId);
-        const isPersian = /[\u0600-\u06FF]/.test(prompt);
+        const isPersian =
+          curriculum === 'iran' ||
+          /[\u0600-\u06FF]/.test(prompt) ||
+          (body.messages && body.messages.some(m => /[\u0600-\u06FF]/.test(m.content)));
 
         if (env.AI) {
           if (body.imageDataUrl) {
@@ -345,19 +348,30 @@ function normalizeModelId(modelId?: string): string {
               bytes[i] = binaryString.charCodeAt(i);
             }
 
-            const visionPrompt = `You are Nexora Vision, an expert academic OCR and STEM tutor.
-Carefully examine this image:
-1. OCR Denoising: If the image has low resolution, blur, compression artifacts, or handwriting, enhance and transcribe every character, mathematical formula, diagram, or question text accurately.
-2. Language: Recognize whether the problem is in Persian, English, or Arabic.
-3. Detailed Solution: Provide a comprehensive, step-by-step solution formatted with clear headings, formulas, and a highlighted final answer in ${curriculum === 'iran' || isPersian ? 'fluent, native Persian (فارسی روان)' : 'clear English'}.
-4. Specific Instructions: ${prompt || 'Transcribe, clarify, and solve this problem step-by-step.'}`;
+            const visionPrompt = isPersian
+              ? `شما «نکسورا» هستید؛ متخصص حل مسائل درسی، تست‌های کنکور و امتحانات نهایی از روی عکس.
+یک تصویر آموزشی شامل سوال یا مسئله برای شما ارسال شده است.
+وظایف صریح و الزامی شما:
+۱. بازنویسی متن صورت سوال: ابتدا متن و داده‌های مسئله موجود در این عکس را دقیق بازنویسی کن.
+۲. حل گام‌به‌گام و تشریحی: مسئله را به صورت مرحله به مرحله با فرمول‌ها و محاسبات دقیق ریاضی/فیزیک/شیمی به زبان فارسی روان حل کن.
+۳. پاسخ نهایی قطعی: در آخرین خط پاسخ، گزینه صحیح یا پاسخ عددی نهایی را به صورت برجسته اعلام کن:
+**پاسخ نهایی / گزینه صحیح: [پاسخ]**
+
+${prompt && !prompt.includes('Analyze and solve') ? `دستور کاربر: ${prompt}` : ''}
+تمام پاسخ باید کاملاً به زبان فارسی شیوا و سلیس باشد.`
+              : `You are Nexora Vision, an expert STEM tutor.
+Examine this image carefully:
+1. Transcribe the exact problem statement and formulas from the image.
+2. Provide a rigorous, step-by-step solution with all equations clearly explained.
+3. Clearly highlight the final answer or correct option at the end.
+User prompt: ${prompt || 'Solve this problem step-by-step.'}`;
 
             const aiRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
               prompt: visionPrompt,
               image: Array.from(bytes),
             });
 
-            const content = aiRes?.response || (isPersian ? 'تصویر با موفقیت خوانش و پردازش شد.' : 'Image transcribed and analyzed successfully.');
+            const content = aiRes?.response || (isPersian ? 'تصویر با موفقیت بازخوانی و حل شد.' : 'Image transcribed and solved successfully.');
 
             return jsonResponse({
               success: true,
@@ -370,23 +384,31 @@ Carefully examine this image:
                 { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
               ],
               followUps: isPersian ? [
-                'این مسئله را با یک روش دیگر حل کن',
-                'فرمول‌های به کار رفته را جداگانه اثبات کن',
-                'یک تست مشابه از این مبحث بده'
+                'یک روش دوم یا راه تستی برای حل این مسئله بگو',
+                'یک تست مشابه از همین مبحث از من بپرس',
+                'فرمول‌های به کار رفته را بیشتر توضیح بده'
               ] : [
-                'Solve this with an alternative method',
-                'Explain the underlying formulas in detail',
-                'Give me a similar practice problem'
+                'Can you solve this using an alternative method?',
+                'Test my understanding with a similar problem',
+                'Explain the underlying formulas in detail'
               ]
             });
           } else {
             // Conversational memory: incorporate previous turns
-            const systemPrompt = `You are Nexora AI (نکسورا), an exceptional academic tutor and study assistant.
+            const systemPrompt = isPersian
+              ? `شما «نکسورا» (Nexora) هستید؛ یک دستیار مطالعاتی و تحصیلی هوشمند، دقیق، مسلط و صمیمی.
+دستورالعمل‌های حیاتی:
+۱. زبان پاسخ: تمام پاسخ‌های شما باید ۱۰۰٪ به زبان فارسی بسیار روان، شیوا، علمی، سلیس و کاملاً طبیعی باشد. هرگز کلمات اسپانیایی، انگلیسی یا نامفهوم در میان جملات فارسی نیاورید.
+۲. درک و حل مسئله: اگر کاربر سوالی پرسید، سریعاً به اصل موضوع بپردازید و به صورت گام‌به‌گام و مستدل توضیح دهید یا حل کنید.
+۳. پیوستگی مکالمه: تمام پیام‌های قبلی کاربر را به خاطر بسپارید و پاسخ‌های بعدی را در امتداد گفتگو ارائه دهید.
+۴. زیبایی و نظم: از تیترهای خوانا، بولت‌پوینت‌های مرتب و فرمول‌های تمیز استفاده کنید.
+۵. آزمون و تست: فقط زمانی سوال تستی مطرح کنید که کاربر صریحاً درخواست تست، آزمون یا کوییز کرده باشد؛ در غیر این صورت به پاسخ مستقیم و روان بپردازید.`
+              : `You are Nexora AI, a world-class academic study assistant.
 Rules:
-1. Conversational Memory: You remember previous messages and build upon them naturally.
-2. Language Fluency: If the user communicates in Persian, respond in flawless, natural, formal Persian (فارسی شیوا، دقیق و بدون غلط نگارشی). If in English, respond in articulate academic English.
-3. Presentation: Format your answer elegantly with clear markdown headings, bullet points, and step-by-step reasoning. Avoid messy or broken markdown.
-4. Problem Solving: When given a problem or question, provide the intuition, step-by-step derivation, and final takeaway clearly.`;
+1. Deliver articulate, elegant explanations in English.
+2. Solve problems step-by-step with formulas and highlighted final answers.
+3. Retain conversational memory across previous turns.
+4. Only ask test questions if explicitly requested by the student.`;
 
             const llmMessages: { role: string; content: string }[] = [
               { role: 'system', content: systemPrompt }
@@ -416,15 +438,15 @@ Rules:
 
             const content = aiRes?.response || (isPersian ? 'پاسخ دریافت گردید.' : 'Response received.');
 
-            // Generate smart follow-up prompts & interactive quiz
+            // Generate smart, contextually-relevant follow-up prompts
             const followUps = isPersian ? [
               'می‌توانی یک مثال کاربردی‌تر از این موضوع بزنی؟',
-              'این مفهوم در امتحان یا کنکور چطور مطرح می‌شود؟',
-              'یک سوال تستی چهارگزینه‌ای از من بپرس'
+              'یک تست چهارگزینه‌ای از این مبحث از من بپرس',
+              'این مفهوم در امتحان چطور سوال می‌آید؟'
             ] : [
               'Can you give another real-world example?',
-              'How does this typically appear on exams?',
-              'Test my understanding with a multiple-choice question'
+              'Test my understanding with a practice question',
+              'How does this typically appear on exams?'
             ];
 
             return jsonResponse({

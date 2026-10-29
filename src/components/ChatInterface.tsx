@@ -84,36 +84,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     window.speechSynthesis.speak(utterance);
   };
 
-  // Generate fallback quiz for assistant message if not explicitly provided
-  const getMessageQuiz = (msg: ChatMessage) => {
-    if (msg.quiz) return msg.quiz;
-
-    const isFa = /[\u0600-\u06FF]/.test(msg.content);
-    if (isFa) {
-      return {
-        question: 'تست یادگیری: بر اساس توضیحات بالا، کدام گزاره درباره این مفهوم علمی صحیح است؟',
-        options: [
-          'الف) بر پایه اصول پایستگی و استدلال استنتاجی بنا شده است',
-          'ب) صرفاً در شرایط غیرایزوله و بدون برهم‌کنش رخ می‌دهد',
-          'ج) مستقل از متغیرهای حالت و شرایط مرزی است',
-          'د) نقض‌کننده قوانین اول و دوم فیزیک است',
-        ],
-        answerIndex: 0,
-        explanation: 'گزینه (الف) صحیح است؛ چرا که طبق اصول علمی مطرح‌شده در درس، این مبحث کاملاً متکی بر روابط پایسته و استدلال اثبات‌پذیر است.',
-      };
+  const [dismissedQuizzes, setDismissedQuizzes] = useState<Record<string, boolean>>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('nexora_dismissed_quizzes');
+      if (saved) {
+        try { return JSON.parse(saved); } catch {}
+      }
     }
+    return {};
+  });
 
-    return {
-      question: 'Concept Check: Which of the following best reflects the core principle discussed above?',
-      options: [
-        'A) Operates in accordance with conservation principles and boundary conditions',
-        'B) Occurs strictly in non-isolated random frameworks',
-        'C) Is invariant regardless of reference frames',
-        'D) Contradicts the first law of thermodynamics',
-      ],
-      answerIndex: 0,
-      explanation: 'Option A is correct: the concept is grounded in rigorous mathematical conservation and defined physical boundaries.',
-    };
+  const handleDismissQuiz = (msgId: string) => {
+    setDismissedQuizzes(prev => {
+      const updated = { ...prev, [msgId]: true };
+      try {
+        localStorage.setItem('nexora_dismissed_quizzes', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
   };
 
   return (
@@ -121,7 +109,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       {messages.map((message) => {
         const isAssistant = message.role === 'assistant';
         const isPersian = /[\u0600-\u06FF]/.test(message.content);
-        const quiz = isAssistant ? getMessageQuiz(message) : null;
+        const quiz = isAssistant && message.quiz && !dismissedQuizzes[message.id] ? message.quiz : null;
         const selectedQuizOption = selectedQuizAnswers[message.id];
 
         return (
@@ -265,18 +253,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 </div>
               )}
 
-              {/* Interactive Study & Concept Check Box (تست و سوالات برای ادامه کار) */}
+              {/* Optional Knowledge Quiz: Only if explicitly provided for this topic and not dismissed */}
               {isAssistant && quiz && (
                 <div className="mt-5 p-4 sm:p-5 rounded-2xl bg-neutral-50/90 dark:bg-neutral-950/60 border border-violet-500/25 space-y-4">
-                  {/* Quiz Header */}
+                  {/* Quiz Header with Dismiss Button */}
                   <div className="flex items-center justify-between border-b border-neutral-200/80 dark:border-neutral-800 pb-2.5">
                     <div className="flex items-center gap-2 text-xs font-bold text-violet-700 dark:text-violet-400">
                       <HelpCircle className="w-4 h-4" />
-                      <span>{isPersian ? 'آزمون سنجش یادگیری (تست مفهومی)' : 'Concept Check & Knowledge Quiz'}</span>
+                      <span>{isPersian ? 'سوال تستی مرتبط با این مبحث' : 'Topic Practice Question'}</span>
                     </div>
-                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/50 text-violet-700 dark:text-violet-300 font-semibold">
-                      Interactive Quiz
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleDismissQuiz(message.id)}
+                      className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 text-[11px] font-medium flex items-center gap-1 transition-colors px-2 py-0.5 rounded-lg hover:bg-neutral-200/60 dark:hover:bg-neutral-800"
+                      title={isPersian ? 'رد کردن این آزمون' : 'Dismiss this question'}
+                    >
+                      <span>{isPersian ? 'رد کردن' : 'Skip'}</span>
+                      <X className="w-3.5 h-3.5" />
+                    </button>
                   </div>
 
                   {/* Question Prompt */}
@@ -338,27 +332,27 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                       <p>{quiz.explanation}</p>
                     </div>
                   )}
+                </div>
+              )}
 
-                  {/* Follow-up Exploration Buttons (ادامه کار) */}
-                  {message.followUps && message.followUps.length > 0 && (
-                    <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800">
-                      <div className="text-[11px] font-bold text-neutral-500 uppercase tracking-wider mb-2 flex items-center gap-1">
-                        <span>{isPersian ? 'پیشنهاد برای ادامه مبحث:' : 'Continue this study topic:'}</span>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {message.followUps.map((prompt, pIdx) => (
-                          <button
-                            key={pIdx}
-                            onClick={() => onFollowUpClick(prompt)}
-                            className="text-left text-xs px-3 py-1.5 rounded-full bg-white dark:bg-neutral-900 hover:bg-neutral-100 dark:hover:bg-neutral-800 border border-neutral-200 dark:border-neutral-700/80 text-neutral-800 dark:text-neutral-200 transition-all hover:border-violet-500 active:scale-95 flex items-center gap-1.5 shadow-xs"
-                          >
-                            <span>{prompt}</span>
-                            <ArrowRight className="w-3 h-3 text-neutral-400" />
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+              {/* Follow-up Exploration Buttons (پیشنهادهای ادامه مبحث) */}
+              {isAssistant && message.followUps && message.followUps.length > 0 && (
+                <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-neutral-800/80">
+                  <div className="text-[11px] font-bold text-neutral-400 mb-2 flex items-center gap-1">
+                    <span>{isPersian ? 'پیشنهاد برای ادامه گفتگو و یادگیری:' : 'Continue this study topic:'}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {message.followUps.map((prompt, pIdx) => (
+                      <button
+                        key={pIdx}
+                        onClick={() => onFollowUpClick(prompt)}
+                        className="text-left text-xs px-3 py-1.5 rounded-full bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 border border-neutral-200/60 dark:border-neutral-700/60 text-neutral-800 dark:text-neutral-200 transition-all hover:border-violet-500 active:scale-95 flex items-center gap-1.5 shadow-xs"
+                      >
+                        <span>{prompt}</span>
+                        <ArrowRight className="w-3 h-3 text-neutral-400" />
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
 

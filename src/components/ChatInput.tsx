@@ -88,9 +88,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   };
 
   const handleSend = () => {
-    if ((!text.trim() && !attachedImage && attachments.length === 0) || isLoading) return;
+    const isFa = !text.trim() || /[\u0600-\u06FF]/.test(text);
+    const defaultImagePrompt = isFa
+      ? 'لطفاً مسئله و سوال موجود در این تصویر را به طور کامل، گام‌به‌گام و با ذکر محاسبات دقیق به زبان فارسی حل کن و در پایان پاسخ نهایی یا گزینه صحیح را صریحاً مشخص نما.'
+      : 'Please transcribe and solve the academic problem shown in this image step-by-step with formulas and state the final answer clearly.';
+
     onSendMessage(
-      text.trim() || (attachedImage ? 'Analyze and solve the problem shown in this image step-by-step with formulas and reasoning.' : ''),
+      text.trim() || (attachedImage ? defaultImagePrompt : ''),
       attachments.length > 0 ? attachments : undefined,
       attachedImage || undefined
     );
