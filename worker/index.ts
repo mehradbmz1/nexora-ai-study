@@ -80,7 +80,42 @@ function sanitizeAiResponse(raw: string, persian: boolean): string {
     s = s.replace(/\(\s*\)/g, '');
     s = s.replace(/[ \t]{2,}/g, ' ');
   }
-  return s.trim();
+// Live Academic References Search (Persian & English Encyclopedia)
+async function searchAcademicSources(query: string, isPersian: boolean): Promise<{ title: string; snippet: string; url: string }[]> {
+  try {
+    const clean = query
+      .replace(/لطفاً|حل کن|توضیح بده|بگو|گزینه|چیست|چگونه|پاسخ|تست|مسئله|تصویر|عکس|حل|در مورد|درباره/gi, '')
+      .replace(/[?!؟.,;:]/g, '')
+      .trim();
+
+    const searchTerm = clean.slice(0, 50).trim();
+    if (!searchTerm || searchTerm.length < 2) return [];
+
+    const lang = isPersian ? 'fa' : 'en';
+    const apiUrl = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(searchTerm)}&format=json&origin=*&srlimit=3`;
+
+    const res = await fetch(apiUrl, {
+      headers: { 'User-Agent': 'NexoraAIStudyPlatform/2.0' }
+    });
+    if (!res.ok) return [];
+
+    const data = await res.json() as any;
+    if (data.query?.search && Array.isArray(data.query.search)) {
+      return data.query.search.slice(0, 3).map((item: any) => ({
+        title: item.title,
+        snippet: (item.snippet || '')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&quot;/g, '"')
+          .replace(/&#039;/g, "'")
+          .replace(/&amp;/g, '&')
+          .trim(),
+        url: `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(item.title.replace(/ /g, '_'))}`
+      }));
+    }
+  } catch {
+    // Fail gracefully without interrupting main AI flow
+  }
+  return [];
 }
 
 export default {
@@ -346,6 +381,48 @@ function normalizeModelId(modelId?: string): string {
         return jsonResponse({ success: true, models });
       }
 
+      // 6b. SPEECH TO TEXT TRANSCRIBE (Cloudflare Workers AI Whisper)
+      if (path === '/api/ai/transcribe' && request.method === 'POST') {
+        let bytes: number[] = [];
+        const contentType = request.headers.get('content-type') || '';
+
+        if (contentType.includes('application/json')) {
+          const body = await request.json() as { audio?: number[]; audioBase64?: string };
+          if (body.audio && Array.isArray(body.audio)) {
+            bytes = body.audio;
+          } else if (body.audioBase64) {
+            const clean = body.audioBase64.replace(/^data:audio\/[a-z0-9-]+;base64,/, '');
+            const binary = atob(clean);
+            const uint = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              uint[i] = binary.charCodeAt(i);
+            }
+            bytes = Array.from(uint);
+          }
+        } else {
+          const buf = await request.arrayBuffer();
+          bytes = Array.from(new Uint8Array(buf));
+        }
+
+        if (bytes.length === 0) {
+          return jsonResponse({ success: false, error: 'No audio data received' }, 400);
+        }
+
+        if (env.AI) {
+          try {
+            const aiRes = await env.AI.run('@cf/openai/whisper', {
+              audio: bytes
+            });
+            const text = (aiRes?.text || '').trim();
+            return jsonResponse({ success: true, text });
+          } catch (err: any) {
+            return jsonResponse({ success: false, error: err.message || 'Speech recognition failed' }, 500);
+          }
+        }
+
+        return jsonResponse({ success: false, error: 'AI binding not available' }, 500);
+      }
+
       // 7. CLOUDFLARE WORKERS AI CHAT / VISION RUNNER
       if (path === '/api/ai/chat' && request.method === 'POST') {
         const body = await request.json() as {
@@ -369,12 +446,24 @@ function normalizeModelId(modelId?: string): string {
           /[\u0600-\u06FF]/.test(prompt) ||
           (body.messages && body.messages.some(m => /[\u0600-\u06FF]/.test(m.content)));
 
+        // Detect if user specifically asked for "فقط گزینه"
+        const wantsOnlyOption = /فقط\s*گزینه|فقط\s*پاسخ|فقط\s*جواب|just\s*(the\s*)?option/i.test(prompt);
+
         // Gather all image URLs provided
         const allImages: string[] = [];
         if (body.imageDataUrls && Array.isArray(body.imageDataUrls)) {
           allImages.push(...body.imageDataUrls.filter(Boolean));
         } else if (body.imageDataUrl) {
           allImages.push(body.imageDataUrl);
+        }
+
+        // Live Academic References Search
+        const academicSources = await searchAcademicSources(prompt, isPersian);
+        let academicContext = '';
+        if (academicSources.length > 0) {
+          academicContext = `\n\n### مراجع علمی و مستندات یافت‌شده برای این موضوع:\n` +
+            academicSources.map(s => `- **${s.title}**: ${s.snippet}`).join('\n') +
+            `\n(از این مراجع علمی در راستی‌آزمایی، اثبات دقیق و ذکر دلیل علمی پاسخ خود استفاده کن.)`;
         }
 
         if (env.AI) {
@@ -393,19 +482,21 @@ function normalizeModelId(modelId?: string): string {
               const visionPrompt = isPersian
                 ? `شما «نکسورا» (Nexora) هستید؛ استاد و مدرس برجسته در حل مسائل درسی، کنکور، تست‌ها و امتحانات نهایی.
 ${allImages.length > 1 ? `این تصویر شماره ${i + 1} از مجموع ${allImages.length} تصویر ارسالی دانش‌آموز است.` : 'یک تصویر درسی شامل سوال یا مسئله برای شما ارسال شده است.'}
+${academicContext}
 
-وظایف صریح و الزامی شما:
+دستورالعمل‌های الزامی و ضدباگ:
 ۱. حل دونه‌به‌دونه: اگر در این تصویر یک یا چند سوال وجود دارد، تمام سوالات را جداگانه شماره‌گذاری کن (مثلاً: **سوال ۱:**، **سوال ۲:** و...).
 ۲. بازنویسی متن هر سوال: صورت و داده‌های هر مسئله را دقیق بازنویسی کن.
-۳. حل تشریحی و گام‌به‌گام: با فرمول‌ها، محاسبات کامل ریاضی/فیزیک/شیمی و استدلال علمی به زبان فارسی روان حل کن.
+${wantsOnlyOption ? `۳. کاربر صریحاً خواسته است که «فقط گزینه» مشخص شود: ابتدا محاسبات را با دقت صددرصد در ذهن خود چک کن تا هیچ باگی پیش نیاید، سپس فقط گزینه صحیح را اعلام نما:
+**گزینه صحیح: گزینه [شماره گزینه]**` : `۳. حل تشریحی با ذکر دلیل علمی: با فرمول‌ها، محاسبات کامل ریاضی/فیزیک/شیمی و استدلال علمی محکم به زبان فارسی روان حل کن و علت درستی این گزینه و رد سایر گزینه‌ها را با دلیل اثبات کن.
 ۴. پاسخ نهایی قطعی: در انتهای هر سوال، گزینه صحیح یا پاسخ نهایی را به صورت برجسته اعلام کن:
-**پاسخ نهایی / گزینه صحیح: [پاسخ]**
+**پاسخ نهایی / گزینه صحیح: [پاسخ]**`}
 
 ${prompt && !prompt.includes('Analyze and solve') ? `دستور ویژه دانش‌آموز: ${prompt}` : ''}
 پاسخ باید ۱۰۰٪ به زبان فارسی شیوا، سلیس و بدون کلمات زبان‌های دیگر باشد.`
                 : `You are Nexora Vision, an expert STEM tutor.
 ${allImages.length > 1 ? `This is image ${i + 1} of ${allImages.length}.` : 'An image containing academic problems has been provided.'}
-Solve each question on this image one by one step-by-step with formulas and state the final answer clearly.
+${wantsOnlyOption ? 'The user requested ONLY the option. Verify rigorously, then output ONLY: **Correct Option: Option [X]**' : 'Solve each question on this image one by one step-by-step with formulas, proof reasoning, and clearly state the final answer.'}
 User prompt: ${prompt || 'Solve this problem step-by-step.'}`;
 
               const aiRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
@@ -425,16 +516,26 @@ User prompt: ${prompt || 'Solve this problem step-by-step.'}`;
 
             const content = solvedParts.join('\n\n---\n\n');
 
+            const citations = academicSources.length > 0
+              ? academicSources.map(s => ({
+                  title: s.title,
+                  url: s.url,
+                  source: isPersian ? 'دانشنامه علمی' : 'Academic Reference'
+                }))
+              : (isPersian ? [
+                  { title: 'کتاب‌های درسی رسمی آموزش و پرورش', url: 'http://chap.sch.ir', source: 'آموزش و پرورش' },
+                  { title: 'شبکه ملی رشد', url: 'https://roshd.ir', source: 'رشد' },
+                  { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
+                ] : [
+                  { title: 'Stanford Encyclopedia of Science', url: 'https://plato.stanford.edu', source: 'Stanford' }
+                ]);
+
             return jsonResponse({
               success: true,
               content,
               modelId: '@cf/meta/llama-3.2-11b-vision-instruct',
               modelName: 'Meta Llama 3.2 11B Vision',
-              citations: [
-                { title: 'کتاب‌های درسی رسمی آموزش و پرورش', url: 'http://chap.sch.ir', source: 'آموزش و پرورش' },
-                { title: 'شبکه ملی رشد', url: 'https://roshd.ir', source: 'رشد' },
-                { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
-              ],
+              citations,
               followUps: isPersian ? [
                 'می‌توانی یک سوال تستی چهارگزینه‌ای از این مبحث بپرسی؟',
                 'یک سوال تشریحی مفهومی از من بپرس تا یادگیری‌ام را بسنجم',
@@ -451,19 +552,33 @@ User prompt: ${prompt || 'Solve this problem step-by-step.'}`;
               ? `دانش‌آموز گرامی: «${body.user.firstName} ${body.user.lastName || ''}»`
               : '';
 
+            const reasoningDirective = wantsOnlyOption
+              ? `کاربر صریحاً خواسته است که «فقط گزینه» مشخص شود.
+الزام حیاتی ضدباگ:
+۱. درستی سوال و تمامی فرمول‌ها و محاسبات را در ذهن خود با بالاترین دقت علمی چک و راستی‌آزمایی کن تا هیچ باگ یا اشتباهی در گزینه رخ ندهد.
+۲. بدون هیچ‌گونه توضیح اضافی، اطاله کلام، مقدمه‌چینی یا آوردن مراحل، مستقیماً و فقط گزینه صحیح را اعلام نما:
+**گزینه صحیح: گزینه [شماره گزینه]**`
+              : `الزام حیاتی علمی، استدلالی و جلوگیری از باگ:
+۱. برای هر پاسخ، حتماً «دلیل علمی»، «اثبات فرمولی»، «محاسبات گام‌به‌گام» و «علت رد سایر گزینه‌ها» را به طور دقیق تشریح کن تا پاسخ کاملاً مستدل، مستند و اثبات‌پذیر باشد و هیچ باگی نداشته باشد.
+۲. از ارائه پاسخ‌های شتاب‌زده یا بدون دلیل اکیداً خودداری کن.
+۳. در پایان پس از اثبات کامل، گزینه صحیح یا پاسخ نهایی را به صورت برجسته اعلام کن:
+**پاسخ نهایی / گزینه صحیح: [پاسخ]**`;
+
             const systemPrompt = isPersian
               ? `شما «نکسورا» (Nexora) هستید؛ یک استاد و معلم خصوصی دانشمند، بسیار مسلط، دقیق، شکیبا و صمیمی.
 ${userGreeting ? `شما با ${userGreeting} گفتگو می‌کنید و اطلاعات و سطح درسی ایشان را در طول گفتگوهای این نشست حفظ می‌نمایید.` : ''}
+${academicContext}
 
 دستورالعمل‌های الزامی:
 ۱. زبان پاسخ: تمام پاسخ‌های شما باید ۱۰۰٪ به زبان فارسی رسمی، بسیار روان، شیوا، علمی، سلیس و کاملاً طبیعی با رسم‌الخط استاندارد فارسی باشد. اکیداً از به کار بردن کاراکترهای چینی، لغات اسپانیایی یا کلمات انگلیسی در میان متن فارسی خودداری کن و واژگان صحیح فارسی مانند «وارد شود»، «اثر کند»، «اعمال شود» به کار ببر.
-۲. توضیحات کامل، جامع و طولانی: پاسخ‌ها را خلاصه یا ناقص رها نکن. برای هر پرسش، مفاهیم پایه‌ای، تعاریف علمی، فرمول‌های مرتبط، مثال‌های روشن و نتیجه‌گیری دقیق را به صورت گام‌به‌گام و طولانی شرح بده تا موضوع به شکل عمیق درک شود.
-۳. حل دقیق مسائل: کلیه محاسبات، فرمول‌های ریاضی و اصول فیزیک/شیمی باید کاملاً معتبر و اثبات‌شده باشند و پاسخ نهایی صریحاً نوشته شود.
+۲. ${reasoningDirective}
+۳. توضیحات کامل و عمیق: پاسخ‌ها را خلاصه یا ناقص رها نکن. برای هر پرسش، مفاهیم پایه‌ای، تعاریف علمی، فرمول‌های مرتبط، مثال‌های روشن و نتیجه‌گیری دقیق را به صورت گام‌به‌گام شرح بده تا موضوع به شکل عمیق درک شود.
 ۴. پیوستگی مکالمه و حافظه: تمام پیام‌های قبلی کاربر در همین گفتگو را به خاطر بسپارید و پاسخ‌های جدید را کاملاً در امتداد مباحث مطرح‌شده قبلی ارائه دهید.
 ۵. عدم تحمیل آزمون تستی: هرگز و تحت هیچ شرایطی به صورت خودسرانه یا پشت‌سرهم سوال تستی مطرح نکنید. در صورتی که مبحث پایان یافت یا برای سنجش تسلط نیاز به تمرین بود، در پایان با احترام پیشنهاد دهید:
 «💡 آیا مایلید برای سنجش تسلط شما بر این مبحث، یک تست چهارگزینه‌ای مطرح کنم یا یک سوال تشریحی مفهومی؟»`
               : `You are Nexora AI, a world-class academic study assistant.
 ${body.user?.firstName ? `Student: ${body.user.firstName} ${body.user.lastName || ''}` : ''}
+${wantsOnlyOption ? 'The student wants ONLY the correct option. Verify all calculations rigorously in your internal reasoning, then output ONLY: **Correct Option: Option [X]**' : 'Provide rigorous step-by-step reasoning with formulas explaining WHY the answer is correct.'}
 Rules:
 1. Deliver articulate, comprehensive, and step-by-step academic explanations in English.
 2. Solve problems step-by-step with formulas and highlighted final answers.
@@ -511,10 +626,23 @@ Rules:
               'Can you give another real-world example?'
             ];
 
+            const citations = academicSources.length > 0
+              ? academicSources.map(s => ({
+                  title: s.title,
+                  url: s.url,
+                  source: isPersian ? 'دانشنامه علمی' : 'Academic Reference'
+                }))
+              : (isPersian ? [
+                  { title: 'کتاب‌های درسی رسمی آموزش و پرورش', url: 'http://chap.sch.ir', source: 'آموزش و پرورش' },
+                  { title: 'شبکه ملی رشد', url: 'https://roshd.ir', source: 'رشد' },
+                  { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
+                ] : []);
+
             return jsonResponse({
               success: true,
               content,
               modelId,
+              citations,
               followUps
             });
           }

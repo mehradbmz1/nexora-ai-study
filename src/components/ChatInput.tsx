@@ -6,8 +6,10 @@ import {
   X,
   Image as ImageIcon,
   Sparkles,
+  Loader2,
 } from 'lucide-react';
 import type { MessageAttachment } from '../types';
+import { ChatSyncService } from '../services/api';
 
 interface ChatInputProps {
   onSendMessage: (
@@ -28,10 +30,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
-  const [isDictating, setIsDictating] = useState(false);
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
   const recognitionRef = useRef<any>(null);
+  const receivedTextFromWebSpeech = useRef<boolean>(false);
 
   // Auto-resize textarea height
   useEffect(() => {
@@ -41,54 +49,137 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   }, [text]);
 
-  // Clean up speech recognition on unmount
+  // Clean up recording & recognition on unmount
   useEffect(() => {
     return () => {
       if (recognitionRef.current) {
         try { recognitionRef.current.stop(); } catch {}
       }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try { mediaRecorderRef.current.stop(); } catch {}
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+      }
     };
   }, []);
 
-  const toggleDictation = () => {
+  const startVoiceRecording = async () => {
+    receivedTextFromWebSpeech.current = false;
+    audioChunksRef.current = [];
+
+    // 1. Start browser Web Speech API for instant interim preview if supported
     const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRec) {
-      onLaunchVoiceMode();
-      return;
+    if (SpeechRec) {
+      try {
+        const rec = new SpeechRec();
+        rec.continuous = true;
+        rec.interimResults = true;
+        rec.lang = 'fa-IR';
+
+        rec.onresult = (event: any) => {
+          let transcript = '';
+          for (let i = 0; i < event.results.length; ++i) {
+            transcript += event.results[i][0].transcript;
+          }
+          if (transcript.trim()) {
+            receivedTextFromWebSpeech.current = true;
+            setText(prev => {
+              const base = prev.trim();
+              return base ? base + ' ' + transcript.trim() : transcript.trim();
+            });
+          }
+        };
+
+        rec.onerror = () => {
+          // Silent fallback to Cloudflare Whisper
+        };
+
+        rec.start();
+        recognitionRef.current = rec;
+      } catch {}
     }
 
-    if (isDictating) {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch {}
-      }
-      setIsDictating(false);
-      return;
-    }
-
+    // 2. Start hardware MediaRecorder for Cloudflare Workers AI Whisper fallback
     try {
-      const rec = new SpeechRec();
-      rec.continuous = true;
-      rec.interimResults = true;
-      rec.lang = 'fa-IR';
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
 
-      rec.onresult = (event: any) => {
-        let transcript = '';
-        for (let i = 0; i < event.results.length; ++i) {
-          transcript += event.results[i][0].transcript;
-        }
-        if (transcript) {
-          setText(prev => (prev ? prev + ' ' : '') + transcript);
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
+        : '';
+
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
         }
       };
 
-      rec.onend = () => setIsDictating(false);
-      rec.onerror = () => setIsDictating(false);
+      recorder.onstop = async () => {
+        setIsRecordingAudio(false);
 
-      rec.start();
-      recognitionRef.current = rec;
-      setIsDictating(true);
-    } catch {
-      setIsDictating(false);
+        // Stop all microphone stream tracks
+        stream.getTracks().forEach(t => t.stop());
+
+        // If Web Speech API already transcribed text, we don't need Whisper
+        if (receivedTextFromWebSpeech.current) {
+          setIsTranscribing(false);
+          return;
+        }
+
+        // Send audio to Cloudflare Whisper
+        const audioBlob = new Blob(audioChunksRef.current, {
+          type: recorder.mimeType || 'audio/webm'
+        });
+
+        if (audioBlob.size > 800) {
+          setIsTranscribing(true);
+          try {
+            const res = await ChatSyncService.transcribeAudio(audioBlob);
+            if (res.success && res.text) {
+              setText(prev => {
+                const base = prev.trim();
+                return base ? base + ' ' + res.text!.trim() : res.text!.trim();
+              });
+            }
+          } catch (err) {
+            console.error('Whisper transcribe error:', err);
+          } finally {
+            setIsTranscribing(false);
+          }
+        }
+      };
+
+      recorder.start(200);
+      setIsRecordingAudio(true);
+    } catch (err) {
+      console.warn('Microphone permission or hardware error:', err);
+      setIsRecordingAudio(false);
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch {}
+    }
+
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try { mediaRecorderRef.current.stop(); } catch {}
+    } else {
+      setIsRecordingAudio(false);
+    }
+  };
+
+  const toggleDictation = () => {
+    if (isRecordingAudio) {
+      stopVoiceRecording();
+    } else {
+      startVoiceRecording();
     }
   };
 
@@ -202,6 +293,30 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         onChange={handleFileSelect}
       />
 
+      {/* Real-time Transcription Status Banner */}
+      {isTranscribing && (
+        <div className="mb-2 px-3 py-1.5 rounded-xl bg-violet-500/10 border border-violet-500/20 text-violet-700 dark:text-violet-300 text-xs font-semibold flex items-center gap-2 animate-in fade-in">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-500" />
+          <span>در حال تبدیل صدای شما به متن با هوش مصنوعی Whisper نکسورا...</span>
+        </div>
+      )}
+
+      {isRecordingAudio && (
+        <div className="mb-2 px-3 py-1.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-700 dark:text-rose-300 text-xs font-semibold flex items-center justify-between animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+            <span>در حال ضبط صدا... لطفاً صحبت کنید</span>
+          </div>
+          <button
+            type="button"
+            onClick={stopVoiceRecording}
+            className="text-[11px] underline hover:text-rose-600 transition-colors cursor-pointer"
+          >
+            اتمام و تبدیل به متن
+          </button>
+        </div>
+      )}
+
       <div className="relative rounded-2xl sm:rounded-3xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/90 shadow-lg dark:shadow-neutral-950/40 backdrop-blur-xl transition-all duration-200 focus-within:border-violet-500/80 dark:focus-within:border-violet-400/80 focus-within:ring-2 focus-within:ring-violet-500/20">
         {/* Attached Images Gallery Preview */}
         {attachedImages.length > 0 && (
@@ -276,7 +391,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="p-2 sm:p-2.5 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-violet-600 dark:hover:text-violet-400 transition-colors mb-1"
+            className="p-2 sm:p-2.5 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-violet-600 dark:hover:text-violet-400 transition-colors mb-1 cursor-pointer"
             title="Attach one or multiple images (Ctrl+V supported)"
           >
             <ImageIcon className="w-5 h-5" />
@@ -285,7 +400,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="p-2 sm:p-2.5 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors mb-1 hidden sm:flex"
+            className="p-2 sm:p-2.5 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors mb-1 hidden sm:flex cursor-pointer"
             title="Attach document (PDF)"
           >
             <Paperclip className="w-5 h-5" />
@@ -310,25 +425,38 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
           {/* Right action buttons: Dictation Mic, Voice Mode, and Send */}
           <div className="flex items-center gap-1 sm:gap-1.5 mb-1">
-            {/* Live Voice Dictation Button (Transcribes voice into text bar on demand) */}
+            {/* Live Voice Dictation Button (Cloudflare Whisper STT + Web Speech) */}
             <button
               type="button"
               onClick={toggleDictation}
-              className={`p-2 sm:p-2.5 rounded-xl transition-all active:scale-95 flex items-center justify-center ${
-                isDictating
+              disabled={isTranscribing}
+              className={`p-2 sm:p-2.5 rounded-xl transition-all active:scale-95 flex items-center justify-center cursor-pointer ${
+                isRecordingAudio
                   ? 'bg-rose-500 text-white animate-pulse shadow-md shadow-rose-500/30'
+                  : isTranscribing
+                  ? 'bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-300'
                   : 'hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
               }`}
-              title={isDictating ? 'در حال شنیدن صدای شما... برای توقف کلیک کنید' : 'تایپ صوتی فارسی (Speech to Text)'}
+              title={
+                isRecordingAudio
+                  ? 'در حال ضبط صدا... کلیک کنید تا متوقف و به متن تبدیل شود'
+                  : isTranscribing
+                  ? 'در حال تبدیل گفتار به متن با Whisper هوش مصنوعی...'
+                  : 'تایپ صوتی فارسی (Speech to Text با Whisper هوش مصنوعی)'
+              }
             >
-              <Mic className="w-4 h-4 sm:w-5 sm:h-5" />
+              {isTranscribing ? (
+                <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
+              ) : (
+                <Mic className="w-4 h-4 sm:w-5 sm:h-5" />
+              )}
             </button>
 
             {/* Fullscreen Voice Mode Button */}
             <button
               type="button"
               onClick={onLaunchVoiceMode}
-              className="p-2 sm:p-2.5 rounded-xl bg-violet-50 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-900/50 border border-violet-200/60 dark:border-violet-800/50 transition-all active:scale-95 flex items-center gap-1.5"
+              className="p-2 sm:p-2.5 rounded-xl bg-violet-50 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-900/50 border border-violet-200/60 dark:border-violet-800/50 transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
               title="ورود به حالت گفتگوی صوتی زنده"
             >
               <Sparkles className="w-4 h-4 text-violet-500" />
@@ -340,7 +468,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               type="button"
               onClick={handleSend}
               disabled={(!text.trim() && attachedImages.length === 0 && attachments.length === 0) || isLoading}
-              className={`p-2.5 sm:p-3 rounded-xl transition-all duration-200 flex items-center justify-center active:scale-95 ${
+              className={`p-2.5 sm:p-3 rounded-xl transition-all duration-200 flex items-center justify-center active:scale-95 cursor-pointer ${
                 text.trim() || attachedImages.length > 0 || attachments.length > 0
                   ? 'bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:opacity-90 shadow-md'
                   : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-400 cursor-not-allowed'

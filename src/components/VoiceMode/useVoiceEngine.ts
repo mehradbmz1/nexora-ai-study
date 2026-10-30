@@ -34,7 +34,10 @@ export function useVoiceEngine(
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const synthUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const isSpeakingRef = useRef<boolean>(false);
+  const hasSpokenInThisTurn = useRef<boolean>(false);
   const latestTranscriptRef = useRef<string>('');
 
   // Session duration timer
@@ -45,7 +48,7 @@ export function useVoiceEngine(
     return () => clearInterval(timer);
   }, []);
 
-  // Cleanup Web Audio and Speech on unmount
+  // Cleanup Web Audio, MediaRecorder, and Speech on unmount
   useEffect(() => {
     return () => {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
@@ -53,6 +56,9 @@ export function useVoiceEngine(
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       if (recognitionRef.current) {
         try { recognitionRef.current.stop(); } catch {}
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try { mediaRecorderRef.current.stop(); } catch {}
       }
       if (micStreamRef.current) {
         micStreamRef.current.getTracks().forEach(t => t.stop());
@@ -133,10 +139,12 @@ export function useVoiceEngine(
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     if (stateTimeoutRef.current) clearTimeout(stateTimeoutRef.current);
 
-    // Pause speech recognition while AI is thinking/speaking
+    // Pause speech recognition and clear audio chunks while AI is thinking/speaking
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch {}
     }
+    audioChunksRef.current = [];
+    hasSpokenInThisTurn.current = false;
 
     const isFa = /[\u0600-\u06FF]/.test(userPrompt);
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -187,6 +195,33 @@ export function useVoiceEngine(
     }
   }, [history, selectedModelId, playAssistantSpeech]);
 
+  // Transcribe recorded audio with Cloudflare Workers AI Whisper as fallback
+  const processRecordedAudioWithWhisper = useCallback(async () => {
+    if (audioChunksRef.current.length === 0 || isSpeakingRef.current || isMuted) return;
+
+    const mime = mediaRecorderRef.current?.mimeType || 'audio/webm';
+    const blob = new Blob(audioChunksRef.current, { type: mime });
+    audioChunksRef.current = [];
+    hasSpokenInThisTurn.current = false;
+
+    if (blob.size < 1200) return;
+
+    setState('thinking');
+    setCurrentTranscript('در حال تبدیل گفتار شما با Whisper هوش مصنوعی...');
+
+    try {
+      const res = await ChatSyncService.transcribeAudio(blob);
+      if (res.success && res.text && res.text.trim()) {
+        submitSpeechToAI(res.text.trim());
+      } else {
+        setState('listening');
+        setCurrentTranscript('متن گفتار تشخیص داده نشد. لطفاً مجدداً صحبت کنید.');
+      }
+    } catch {
+      setState('listening');
+    }
+  }, [isMuted, submitSpeechToAI]);
+
   // Start real browser Speech Recognition
   const startSpeechRecognition = useCallback(() => {
     if (typeof window === 'undefined' || isMuted || isSpeakingRef.current) return;
@@ -202,7 +237,6 @@ export function useVoiceEngine(
       const rec = new SpeechRec();
       rec.continuous = true;
       rec.interimResults = true;
-      // Capture both Persian and English
       rec.lang = 'fa-IR';
 
       rec.onresult = (event: any) => {
@@ -224,7 +258,6 @@ export function useVoiceEngine(
           setCurrentTranscript(text);
           setSpeaker('user');
 
-          // Silence debounce: when user pauses for 1.3 seconds, automatically submit speech to AI!
           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
           silenceTimerRef.current = setTimeout(() => {
             if (latestTranscriptRef.current && !isSpeakingRef.current) {
@@ -237,12 +270,7 @@ export function useVoiceEngine(
       };
 
       rec.onerror = () => {
-        // Auto-restart if disconnected
-        setTimeout(() => {
-          if (!isSpeakingRef.current && !isMuted) {
-            try { rec.start(); } catch {}
-          }
-        }, 1000);
+        // Browser Speech API failed or blocked -> Whisper audio fallback handles it automatically
       };
 
       rec.onend = () => {
@@ -258,7 +286,7 @@ export function useVoiceEngine(
     } catch {}
   }, [isMuted, submitSpeechToAI]);
 
-  // Initialize Microphone & Audio Analysis
+  // Initialize Microphone, MediaRecorder & Audio Analysis
   const initAudioStream = useCallback(async () => {
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
@@ -277,21 +305,42 @@ export function useVoiceEngine(
         const source = ctx.createMediaStreamSource(stream);
         source.connect(analyser);
 
+        // Start MediaRecorder for hardware audio capture
+        try {
+          const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+            ? 'audio/webm'
+            : MediaRecorder.isTypeSupported('audio/mp4')
+            ? 'audio/mp4'
+            : '';
+          const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+          mediaRecorderRef.current = recorder;
+
+          recorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0 && !isSpeakingRef.current && !isMuted) {
+              audioChunksRef.current.push(e.data);
+            }
+          };
+
+          recorder.start(250);
+        } catch (e) {
+          console.warn('MediaRecorder init error:', e);
+        }
+
         setUseRealMic(true);
         startSpeechRecognition();
       }
     } catch {
-      console.warn('Microphone permission not granted or device not available. Using procedural voice mode.');
+      console.warn('Microphone permission not granted. Procedural visualizer active.');
       setUseRealMic(false);
     }
-  }, [startSpeechRecognition]);
+  }, [isMuted, startSpeechRecognition]);
 
   // Run on mount
   useEffect(() => {
     initAudioStream();
   }, [initAudioStream]);
 
-  // Audio animation and frequency analysis loop
+  // Audio animation, frequency analysis loop, and voice activity detection
   useEffect(() => {
     let phase = 0;
 
@@ -313,8 +362,30 @@ export function useVoiceEngine(
           slicedFreq.push(val);
         }
         const avg = sum / (16 * 255);
-        setAudioLevel(Math.min(1.0, avg * 2.2));
+        const level = Math.min(1.0, avg * 2.2);
+        setAudioLevel(level);
         setFrequencyData(slicedFreq);
+
+        // Voice activity detection
+        if (level > 0.12 && !isSpeakingRef.current) {
+          hasSpokenInThisTurn.current = true;
+          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+        } else if (hasSpokenInThisTurn.current && level <= 0.08 && !isSpeakingRef.current) {
+          // User finished speaking, wait 1.3s for pause then submit
+          if (!silenceTimerRef.current) {
+            silenceTimerRef.current = setTimeout(() => {
+              silenceTimerRef.current = null;
+              if (latestTranscriptRef.current && latestTranscriptRef.current.trim()) {
+                const toSubmit = latestTranscriptRef.current;
+                latestTranscriptRef.current = '';
+                submitSpeechToAI(toSubmit);
+              } else {
+                // If Web Speech didn't catch it, fallback to Cloudflare Whisper!
+                processRecordedAudioWithWhisper();
+              }
+            }, 1300);
+          }
+        }
       } else {
         if (state === 'speaking') {
           const syllable = Math.sin(phase * 4) * Math.cos(phase * 2);
@@ -335,7 +406,6 @@ export function useVoiceEngine(
           });
           setFrequencyData(freqs);
         } else {
-          // thinking / muted
           const gentleBreathing = Math.sin(phase * 1.2) * 0.05 + 0.08;
           setAudioLevel(gentleBreathing);
           setFrequencyData(new Array(16).fill(15));
@@ -350,7 +420,7 @@ export function useVoiceEngine(
     return () => {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [state, isMuted, useRealMic]);
+  }, [state, isMuted, useRealMic, processRecordedAudioWithWhisper, submitSpeechToAI]);
 
   // Interrupt assistant immediately
   const interrupt = useCallback(() => {
@@ -360,6 +430,8 @@ export function useVoiceEngine(
       window.speechSynthesis.cancel();
     }
     isSpeakingRef.current = false;
+    audioChunksRef.current = [];
+    hasSpokenInThisTurn.current = false;
     setState('listening');
     setSpeaker('user');
     setCurrentTranscript('صحبت متوقف شد. در حال شنیدن صدای شما...');
@@ -377,6 +449,7 @@ export function useVoiceEngine(
         if (recognitionRef.current) {
           try { recognitionRef.current.stop(); } catch {}
         }
+        audioChunksRef.current = [];
         setState('muted');
         setCurrentTranscript('میکروفون غیرفعال شد.');
       } else {

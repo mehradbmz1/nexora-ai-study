@@ -201,4 +201,21 @@ export const ChatSyncService = {
       };
     }
   },
+
+  // Transcribe recorded audio with Cloudflare Workers AI Whisper
+  async transcribeAudio(audioBlob: Blob): Promise<{ success: boolean; text?: string; error?: string }> {
+    try {
+      const buffer = await audioBlob.arrayBuffer();
+      const bytes = Array.from(new Uint8Array(buffer));
+      const res = await fetch('/api/ai/transcribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio: bytes }),
+      });
+      const data = await res.json();
+      return data;
+    } catch (e: any) {
+      return { success: false, error: e.message || 'Transcription request failed' };
+    }
+  },
 };
