@@ -80,6 +80,7 @@ function sanitizeAiResponse(raw: string, persian: boolean): string {
     // Remove all Chinese / CJK characters & ideographs & symbols
     s = s.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/g, '');
     // Remove foreign tokens leaked by tokenizer
+    s = s.replace(/\blực\b/gi, 'نیرو');
     s = s.replace(/\bfuerza\b/gi, 'نیروی');
     s = s.replace(/\baqu[íi]\b/gi, '');
     s = s.replace(/\bHola\b/gi, '');
