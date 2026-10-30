@@ -76,10 +76,12 @@ function sanitizeAiResponse(raw: string, persian: boolean): string {
     s = s.replace(/\bpero\b/gi, '');
     s = s.replace(/\bcomo\b/gi, '');
     s = s.replace(/\bpara\b/gi, '');
-    // Clean multiple consecutive spaces or empty parentheses
     s = s.replace(/\(\s*\)/g, '');
     s = s.replace(/[ \t]{2,}/g, ' ');
   }
+  return s.trim();
+}
+
 // Live Academic References Search (Persian & English Encyclopedia)
 async function searchAcademicSources(query: string, isPersian: boolean): Promise<{ title: string; snippet: string; url: string }[]> {
   try {
