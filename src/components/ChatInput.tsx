@@ -222,19 +222,61 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // High-fidelity image optimization (compresses large camera photos to crisp 1600px JPEG to prevent upload bugs)
+  const optimizeImage = (file: File): Promise<string> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        if (!dataUrl) {
+          resolve('');
+          return;
+        }
+        const img = new Image();
+        img.onload = () => {
+          const maxDim = 1600;
+          let { width, height } = img;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(dataUrl);
+            return;
+          }
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressed = canvas.toDataURL('image/jpeg', 0.90);
+          resolve(compressed);
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+      };
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    Array.from(files).forEach(file => {
+    for (const file of Array.from(files)) {
       if (file.type.startsWith('image/')) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          if (reader.result) {
-            setAttachedImages(prev => [...prev, reader.result as string]);
-          }
-        };
-        reader.readAsDataURL(file);
+        const optimized = await optimizeImage(file);
+        if (optimized) {
+          setAttachedImages(prev => [...prev, optimized]);
+        }
       } else {
         const sizeKb = Math.round(file.size / 1024);
         const sizeStr = sizeKb > 1024 ? `${(sizeKb / 1024).toFixed(1)} MB` : `${sizeKb} KB`;
@@ -243,27 +285,24 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           { name: file.name, size: sizeStr, type: file.name.endsWith('.pdf') ? 'pdf' : 'doc' },
         ]);
       }
-    });
+    }
 
     if (e.target) e.target.value = '';
   };
 
   // Support clipboard paste of screenshots / images
-  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items;
     if (items) {
       for (let i = 0; i < items.length; i++) {
         if (items[i].type.startsWith('image/')) {
           const file = items[i].getAsFile();
           if (file) {
-            const reader = new FileReader();
-            reader.onload = () => {
-              if (reader.result) {
-                setAttachedImages(prev => [...prev, reader.result as string]);
-              }
-            };
-            reader.readAsDataURL(file);
             e.preventDefault();
+            const optimized = await optimizeImage(file);
+            if (optimized) {
+              setAttachedImages(prev => [...prev, optimized]);
+            }
             break;
           }
         }

@@ -57,10 +57,19 @@ function generateToken(): string {
   return crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
 }
 
-// Clean and sanitize LLM outputs to remove cross-lingual token leaks
+// Clean and sanitize LLM outputs to remove cross-lingual token leaks and eliminate annoying asterisks
 function sanitizeAiResponse(raw: string, persian: boolean): string {
   if (!raw) return '';
   let s = raw;
+
+  // 1. Replace escaped multiplication asterisks (\* -> ×)
+  s = s.replace(/\\\*/g, '×');
+
+  // 2. Eradicate markdown bold/italic asterisks completely (**text** -> text, *text* -> text)
+  s = s.replace(/\*{2,}/g, '');
+  s = s.replace(/(^|\n)\s*\*\s+/g, '$1• ');
+  s = s.replace(/\*/g, '');
+
   if (persian) {
     // Replace Chinese homoglyphs
     s = s.replace(/作用/g, 'اثر');
@@ -71,11 +80,13 @@ function sanitizeAiResponse(raw: string, persian: boolean): string {
     // Remove all Chinese / CJK characters & ideographs & symbols
     s = s.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/g, '');
     // Remove foreign tokens leaked by tokenizer
+    s = s.replace(/\bfuerza\b/gi, 'نیروی');
     s = s.replace(/\baqu[íi]\b/gi, '');
     s = s.replace(/\bHola\b/gi, '');
-    s = s.replace(/\bpero\b/gi, '');
+    s = s.replace(/\bpero\b/gi, 'اما');
     s = s.replace(/\bcomo\b/gi, '');
-    s = s.replace(/\bpara\b/gi, '');
+    s = s.replace(/\bpara\b/gi, 'برای');
+    s = s.replace(/\bporque\b/gi, 'زیرا');
     s = s.replace(/\(\s*\)/g, '');
     s = s.replace(/[ \t]{2,}/g, ' ');
   }
@@ -464,90 +475,140 @@ function normalizeModelId(modelId?: string): string {
         let academicContext = '';
         if (academicSources.length > 0) {
           academicContext = `\n\n### مراجع علمی و مستندات یافت‌شده برای این موضوع:\n` +
-            academicSources.map(s => `- **${s.title}**: ${s.snippet}`).join('\n') +
-            `\n(از این مراجع علمی در راستی‌آزمایی، اثبات دقیق و ذکر دلیل علمی پاسخ خود استفاده کن.)`;
+            academicSources.map(s => `- ${s.title}: ${s.snippet}`).join('\n') +
+            `\n(از این مراجع علمی در راستی‌آزمایی، اثبات دقیق و ذکر دلیل علمی پاسخ خود استفاده کن و به هیچ وجه از ستاره در متن استفاده نکن.)`;
         }
 
         if (env.AI) {
           if (allImages.length > 0) {
-            const solvedParts: string[] = [];
+            try {
+              const ocrResults: string[] = [];
 
-            for (let i = 0; i < allImages.length; i++) {
-              const imgData = allImages[i];
-              const base64Clean = imgData.replace(/^data:image\/[a-z]+;base64,/, '');
-              const binaryString = atob(base64Clean);
-              const bytes = new Uint8Array(binaryString.length);
-              for (let j = 0; j < binaryString.length; j++) {
-                bytes[j] = binaryString.charCodeAt(j);
+              for (let i = 0; i < allImages.length; i++) {
+                const imgData = allImages[i];
+                const base64Part = imgData.includes(',') ? imgData.split(',')[1] : imgData;
+                const cleanBase64 = base64Part.trim().replace(/\s/g, '');
+                const binaryString = atob(cleanBase64);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let j = 0; j < binaryString.length; j++) {
+                  bytes[j] = binaryString.charCodeAt(j);
+                }
+
+                // Stage 1: High-precision Vision OCR Transcription using Llama 3.2 11B Vision
+                const ocrPrompt = `You are a high-precision document OCR and academic problem transcription engine.
+Examine this image with extreme care and extract all details verbatim:
+1. Exact transcription of every problem, question statement, numbers, units, variables, and formulas. If in Persian/Farsi, transcribe the Persian text exactly.
+2. Exact transcription of all multiple-choice options (1, 2, 3, 4 or الف، ب، ج، د) and their values.
+3. Description and labels of any diagrams, charts, circuits, or geometric shapes.
+4. Provide an initial step-by-step mathematical or scientific solution for each question.
+Do NOT use asterisks.`;
+
+                const visionRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
+                  prompt: ocrPrompt,
+                  image: Array.from(bytes),
+                  max_tokens: 2500,
+                });
+
+                const transcribed = (visionRes as any)?.response || '';
+                ocrResults.push(allImages.length > 1 ? `[تصویر ${i + 1}]:\n${transcribed}` : transcribed);
               }
 
-              const visionPrompt = isPersian
-                ? `شما «نکسورا» (Nexora) هستید؛ استاد و مدرس برجسته در حل مسائل درسی، کنکور، تست‌ها و امتحانات نهایی.
-${allImages.length > 1 ? `این تصویر شماره ${i + 1} از مجموع ${allImages.length} تصویر ارسالی دانش‌آموز است.` : 'یک تصویر درسی شامل سوال یا مسئله برای شما ارسال شده است.'}
+              const combinedOcr = ocrResults.join('\n\n---\n\n');
+
+              // Stage 2: Flagship Deep Reasoning and Persian Pedagogical Solution with Meta Llama 3.3 70B
+              const systemVision = isPersian
+                ? `شما «نکسورا» (Nexora) هستید؛ استاد و مدرس برجسته کنکور، امتحانات نهایی و حل مسائل درسی.
+وظیفه شما حل کامل، گام‌به‌گام، مستدل و دقیق تمامی سوالات استخراج‌شده از تصویر ارسالی دانش‌آموز است.
+
+دستورالعمل‌های حیاتی برای حل کامل و ضدباگ:
+۱. اکیداً از علامت ستاره (* یا **) در سراسر پاسخ خودداری کن. هیچ ستاره‌ای نباید در متن ظاهر شود.
+۲. حل کامل و دونه‌به‌دونه: تمام سوالات تصویر را به صورت جداگانه (سوال ۱:، سوال ۲: و...) شماره‌گذاری کن.
+۳. صورت کامل هر سوال، مقادیر داده‌شده و گزینه‌ها را دقیق بنویس.
+۴. حل تشریحی و عمیق: هرگز خلاصه یا کوتاه ننویس. مراحل حل را با فرمول‌های علمی، محاسبات دقیق ریاضی/فیزیک/شیمی و استدلال مستحکم به فارسی سلیس و روان شرح بده. علت درستی گزینه صحیح و دلیل رد سایر گزینه‌ها را با اثبات علمی تشریح کن.
+۵. پاسخ نهایی: در پایان هر سوال، بدون ستاره بنویس:
+پاسخ نهایی: [پاسخ یا گزینه صحیح]`
+                : `You are Nexora AI, a premier academic problem-solving tutor.
+Solve each problem from the image transcription step-by-step with formulas, calculations, and clear proofs.
+Do NOT use asterisks (* or **) in your output.
+State the final answer clearly without asterisks.`;
+
+              const userVision = wantsOnlyOption
+                ? (isPersian
+                    ? `کاربر صریحاً خواسته است که «فقط گزینه» مشخص شود.
+بر اساس متن و اطلاعات بازخوانی‌شده از روی تصویر:
+"""
+${combinedOcr}
+"""
+تمام محاسبات و گزینه‌ها را در ذهن خود با دقت صددرصد بازبینی کن تا هیچ باگی رخ ندهد. سپس بدون ستاره و بدون هیچ توضیح اضافه، فقط گزینه صحیح را اعلام کن:
+گزینه صحیح: گزینه [شماره گزینه]`
+                    : `Based on this transcribed image:
+"""
+${combinedOcr}
+"""
+The user requested ONLY the option. Verify rigorously, then output ONLY without asterisks:
+Correct Option: Option [X]`)
+                : (isPersian
+                    ? `محتوای استخراج‌شده از تصویر ارسالی:
+"""
+${combinedOcr}
+"""
 ${academicContext}
+${prompt && !prompt.includes('لطفاً') ? `درخواست ویژه دانش‌آموز: ${prompt}` : ''}
+لطفاً تمام سوالات این تصویر را به صورت دونه‌به‌دونه، کامل، تشریحی و با فرمول‌ها و محاسبات دقیق حل کن و در پایان هر سوال، گزینه صحیح را مشخص نما. به هیچ وجه از ستاره استفاده نکن.`
+                    : `Here is the transcribed content from the image:
+"""
+${combinedOcr}
+"""
+User prompt: ${prompt || 'Solve all problems step-by-step with complete formulas.'}
+Solve each question in detail without asterisks.`);
 
-دستورالعمل‌های الزامی و ضدباگ:
-۱. حل دونه‌به‌دونه: اگر در این تصویر یک یا چند سوال وجود دارد، تمام سوالات را جداگانه شماره‌گذاری کن (مثلاً: **سوال ۱:**، **سوال ۲:** و...).
-۲. بازنویسی متن هر سوال: صورت و داده‌های هر مسئله را دقیق بازنویسی کن.
-${wantsOnlyOption ? `۳. کاربر صریحاً خواسته است که «فقط گزینه» مشخص شود: ابتدا محاسبات را با دقت صددرصد در ذهن خود چک کن تا هیچ باگی پیش نیاید، سپس فقط گزینه صحیح را اعلام نما:
-**گزینه صحیح: گزینه [شماره گزینه]**` : `۳. حل تشریحی با ذکر دلیل علمی: با فرمول‌ها، محاسبات کامل ریاضی/فیزیک/شیمی و استدلال علمی محکم به زبان فارسی روان حل کن و علت درستی این گزینه و رد سایر گزینه‌ها را با دلیل اثبات کن.
-۴. پاسخ نهایی قطعی: در انتهای هر سوال، گزینه صحیح یا پاسخ نهایی را به صورت برجسته اعلام کن:
-**پاسخ نهایی / گزینه صحیح: [پاسخ]**`}
-
-${prompt && !prompt.includes('Analyze and solve') ? `دستور ویژه دانش‌آموز: ${prompt}` : ''}
-پاسخ باید ۱۰۰٪ به زبان فارسی شیوا، سلیس و بدون کلمات زبان‌های دیگر باشد.`
-                : `You are Nexora Vision, an expert STEM tutor.
-${allImages.length > 1 ? `This is image ${i + 1} of ${allImages.length}.` : 'An image containing academic problems has been provided.'}
-${wantsOnlyOption ? 'The user requested ONLY the option. Verify rigorously, then output ONLY: **Correct Option: Option [X]**' : 'Solve each question on this image one by one step-by-step with formulas, proof reasoning, and clearly state the final answer.'}
-User prompt: ${prompt || 'Solve this problem step-by-step.'}`;
-
-              const aiRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
-                prompt: visionPrompt,
-                image: Array.from(bytes),
+              const solverRes = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+                messages: [
+                  { role: 'system', content: systemVision },
+                  { role: 'user', content: userVision }
+                ],
+                max_tokens: wantsOnlyOption ? 100 : 3500,
               });
 
-              const rawVision = aiRes?.response || (isPersian ? 'تصویر با موفقیت بازخوانی و حل شد.' : 'Image transcribed and solved successfully.');
-              const cleanPart = sanitizeAiResponse(rawVision, isPersian);
+              const rawFinal = (solverRes as any)?.response || combinedOcr || (isPersian ? 'تصویر با موفقیت بازخوانی و حل شد.' : 'Image solved successfully.');
+              const content = sanitizeAiResponse(rawFinal, isPersian);
 
-              if (allImages.length > 1) {
-                solvedParts.push(`### 📷 تصویر شماره ${i + 1}\n\n${cleanPart}`);
-              } else {
-                solvedParts.push(cleanPart);
-              }
-            }
+              const citations = academicSources.length > 0
+                ? academicSources.map(s => ({
+                    title: s.title,
+                    url: s.url,
+                    source: isPersian ? 'دانشنامه علمی' : 'Academic Reference'
+                  }))
+                : (isPersian ? [
+                    { title: 'کتاب‌های درسی رسمی آموزش و پرورش', url: 'http://chap.sch.ir', source: 'آموزش و پرورش' },
+                    { title: 'شبکه ملی رشد', url: 'https://roshd.ir', source: 'رشد' },
+                    { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
+                  ] : [
+                    { title: 'Stanford Encyclopedia of Science', url: 'https://plato.stanford.edu', source: 'Stanford' }
+                  ]);
 
-            const content = solvedParts.join('\n\n---\n\n');
-
-            const citations = academicSources.length > 0
-              ? academicSources.map(s => ({
-                  title: s.title,
-                  url: s.url,
-                  source: isPersian ? 'دانشنامه علمی' : 'Academic Reference'
-                }))
-              : (isPersian ? [
-                  { title: 'کتاب‌های درسی رسمی آموزش و پرورش', url: 'http://chap.sch.ir', source: 'آموزش و پرورش' },
-                  { title: 'شبکه ملی رشد', url: 'https://roshd.ir', source: 'رشد' },
-                  { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
+              return jsonResponse({
+                success: true,
+                content,
+                modelId: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+                modelName: 'Nexora Flagship Vision + Llama 3.3 70B',
+                citations,
+                followUps: isPersian ? [
+                  'می‌توانی یک سوال تستی چهارگزینه‌ای از این مبحث بپرسی؟',
+                  'یک سوال تشریحی مفهومی از من بپرس تا یادگیری‌ام را بسنجم',
+                  'یک روش دوم یا راه میان‌بر تستی برای این مسئله بگو'
                 ] : [
-                  { title: 'Stanford Encyclopedia of Science', url: 'https://plato.stanford.edu', source: 'Stanford' }
-                ]);
-
-            return jsonResponse({
-              success: true,
-              content,
-              modelId: '@cf/meta/llama-3.2-11b-vision-instruct',
-              modelName: 'Meta Llama 3.2 11B Vision',
-              citations,
-              followUps: isPersian ? [
-                'می‌توانی یک سوال تستی چهارگزینه‌ای از این مبحث بپرسی؟',
-                'یک سوال تشریحی مفهومی از من بپرس تا یادگیری‌ام را بسنجم',
-                'یک روش دوم یا راه میان‌بر تستی برای این مسئله بگو'
-              ] : [
-                'Test my understanding with a multiple-choice question',
-                'Ask me a conceptual practice question',
-                'Can you solve this using an alternative method?'
-              ]
-            });
+                  'Test my understanding with a multiple-choice question',
+                  'Ask me a conceptual practice question',
+                  'Can you solve this using an alternative method?'
+                ]
+              });
+            } catch (err: any) {
+              return jsonResponse({
+                success: false,
+                error: 'خطا در تحلیل تصویر: ' + (err.message || 'Vision analysis failed')
+              }, 500);
+            }
           } else {
             // Conversational memory: incorporate previous turns
             const userGreeting = body.user?.firstName
@@ -558,13 +619,14 @@ User prompt: ${prompt || 'Solve this problem step-by-step.'}`;
               ? `کاربر صریحاً خواسته است که «فقط گزینه» مشخص شود.
 الزام حیاتی ضدباگ:
 ۱. درستی سوال و تمامی فرمول‌ها و محاسبات را در ذهن خود با بالاترین دقت علمی چک و راستی‌آزمایی کن تا هیچ باگ یا اشتباهی در گزینه رخ ندهد.
-۲. بدون هیچ‌گونه توضیح اضافی، اطاله کلام، مقدمه‌چینی یا آوردن مراحل، مستقیماً و فقط گزینه صحیح را اعلام نما:
-**گزینه صحیح: گزینه [شماره گزینه]**`
+۲. بدون هیچ‌گونه توضیح اضافی، اطاله کلام، مقدمه‌چینی یا آوردن مراحل و بدون استفاده از هرگونه ستاره (* یا **)، مستقیماً و فقط گزینه صحیح را اعلام نما:
+گزینه صحیح: گزینه [شماره گزینه]`
               : `الزام حیاتی علمی، استدلالی و جلوگیری از باگ:
 ۱. برای هر پاسخ، حتماً «دلیل علمی»، «اثبات فرمولی»، «محاسبات گام‌به‌گام» و «علت رد سایر گزینه‌ها» را به طور دقیق تشریح کن تا پاسخ کاملاً مستدل، مستند و اثبات‌پذیر باشد و هیچ باگی نداشته باشد.
 ۲. از ارائه پاسخ‌های شتاب‌زده یا بدون دلیل اکیداً خودداری کن.
-۳. در پایان پس از اثبات کامل، گزینه صحیح یا پاسخ نهایی را به صورت برجسته اعلام کن:
-**پاسخ نهایی / گزینه صحیح: [پاسخ]**`;
+۳. اکیداً از به کار بردن علامت ستاره (* یا **) در سراسر متن خودداری کن. به جای آن، عنوان‌ها را ساده و تمیز بنویس.
+۴. در پایان پس از اثبات کامل، گزینه صحیح یا پاسخ نهایی را به صورت ساده و شفاف اعلام کن:
+پاسخ نهایی: [پاسخ]`;
 
             const systemPrompt = isPersian
               ? `شما «نکسورا» (Nexora) هستید؛ یک استاد و معلم خصوصی دانشمند، بسیار مسلط، دقیق، شکیبا و صمیمی.
@@ -580,10 +642,10 @@ ${academicContext}
 «💡 آیا مایلید برای سنجش تسلط شما بر این مبحث، یک تست چهارگزینه‌ای مطرح کنم یا یک سوال تشریحی مفهومی؟»`
               : `You are Nexora AI, a world-class academic study assistant.
 ${body.user?.firstName ? `Student: ${body.user.firstName} ${body.user.lastName || ''}` : ''}
-${wantsOnlyOption ? 'The student wants ONLY the correct option. Verify all calculations rigorously in your internal reasoning, then output ONLY: **Correct Option: Option [X]**' : 'Provide rigorous step-by-step reasoning with formulas explaining WHY the answer is correct.'}
+${wantsOnlyOption ? 'The student wants ONLY the correct option. Verify all calculations rigorously in your internal reasoning, then output ONLY: Correct Option: Option [X] (without asterisks)' : 'Provide rigorous step-by-step reasoning with formulas explaining WHY the answer is correct without using asterisks.'}
 Rules:
-1. Deliver articulate, comprehensive, and step-by-step academic explanations in English.
-2. Solve problems step-by-step with formulas and highlighted final answers.
+1. Deliver articulate, comprehensive, and step-by-step academic explanations in English without asterisks.
+2. Solve problems step-by-step with formulas and clearly state the final answer without asterisks.
 3. Retain conversational memory across previous turns within this session.
 4. Only ask test questions if explicitly requested by the student.`;
 
