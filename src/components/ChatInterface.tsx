@@ -41,6 +41,22 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [zoomImage, setZoomImage] = useState<string | null>(null);
   const [selectedQuizAnswers, setSelectedQuizAnswers] = useState<Record<string, number>>({});
 
+  // Auto-stop speech synthesis when switching messages or unmounting
+  React.useEffect(() => {
+    return () => {
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+      setSpeakingMsgId(null);
+    }
+  }, [messages.length]);
+
   const handleCopy = (id: string, text: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
@@ -112,6 +128,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         const quiz = isAssistant && message.quiz && !dismissedQuizzes[message.id] ? message.quiz : null;
         const selectedQuizOption = selectedQuizAnswers[message.id];
 
+        const imagesToShow = message.imageDataUrls && message.imageDataUrls.length > 0
+          ? message.imageDataUrls
+          : message.imageDataUrl
+          ? [message.imageDataUrl]
+          : [];
+
         return (
           <div
             key={message.id}
@@ -135,25 +157,35 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   : 'bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 ml-auto shadow-md'
               }`}
             >
-              {/* Image Preview with Click-to-Zoom */}
-              {message.imageDataUrl && (
+              {/* Images Preview with Click-to-Zoom (Single or Multiple) */}
+              {imagesToShow.length > 0 && (
                 <div className="mb-4">
-                  <div
-                    onClick={() => setZoomImage(message.imageDataUrl!)}
-                    className="relative group cursor-pointer overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-700 max-h-72 bg-neutral-950 flex items-center justify-center shadow-xs transition-all hover:ring-2 hover:ring-violet-500"
-                  >
-                    <img
-                      src={message.imageDataUrl}
-                      alt="Uploaded problem sheet"
-                      className="max-h-72 w-auto object-contain transition-transform group-hover:scale-[1.02]"
-                    />
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 text-white text-xs font-semibold backdrop-blur-xs">
-                      <Maximize2 className="w-4 h-4" />
-                      <span>Click to view full image & zoom</span>
-                    </div>
+                  <div className={`grid gap-2.5 ${imagesToShow.length > 1 ? 'grid-cols-2 sm:grid-cols-3' : 'grid-cols-1'}`}>
+                    {imagesToShow.map((imgUrl, imgIdx) => (
+                      <div
+                        key={imgIdx}
+                        onClick={() => setZoomImage(imgUrl)}
+                        className="relative group cursor-pointer overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-700 max-h-72 bg-neutral-950 flex items-center justify-center shadow-xs transition-all hover:ring-2 hover:ring-violet-500"
+                      >
+                        <img
+                          src={imgUrl}
+                          alt={`Problem sheet ${imgIdx + 1}`}
+                          className="max-h-72 w-full object-contain transition-transform group-hover:scale-[1.02]"
+                        />
+                        {imagesToShow.length > 1 && (
+                          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/75 text-[10px] text-white font-mono">
+                            #{imgIdx + 1}
+                          </div>
+                        )}
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 text-white text-xs font-semibold backdrop-blur-xs">
+                          <Maximize2 className="w-4 h-4" />
+                          <span>بزرگ‌نمایی عکس</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                  <span className="text-[11px] text-neutral-400 mt-1 block">
-                    (Click on photo to open fullscreen preview)
+                  <span className="text-[11px] text-neutral-400 mt-1.5 block">
+                    (برای مشاهده تصویر در سایز کامل و خوانا کلیک کنید)
                   </span>
                 </div>
               )}

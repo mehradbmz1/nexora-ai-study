@@ -182,13 +182,15 @@ export const ChatSyncService = {
     imageDataUrl?: string,
     curriculum: EducationalCurriculum = 'iran',
     modelId?: string,
-    messages?: { role: string; content: string }[]
+    messages?: { role: string; content: string }[],
+    imageDataUrls?: string[],
+    user?: { firstName?: string; lastName?: string; email?: string }
   ) {
     try {
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, imageDataUrl, curriculum, modelId, messages }),
+        body: JSON.stringify({ prompt, imageDataUrl, imageDataUrls, curriculum, modelId, messages, user }),
       });
       const data = await res.json();
       return data;

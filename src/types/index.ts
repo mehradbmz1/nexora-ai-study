@@ -70,6 +70,7 @@ export interface ChatMessage {
   timestamp: string;
   attachments?: MessageAttachment[];
   imageDataUrl?: string;
+  imageDataUrls?: string[];
   imageScanResult?: ImageScanResult;
   citations?: CitationLink[];
   studyTip?: string;

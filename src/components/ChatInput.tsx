@@ -10,7 +10,12 @@ import {
 import type { MessageAttachment } from '../types';
 
 interface ChatInputProps {
-  onSendMessage: (text: string, attachments?: MessageAttachment[], imageDataUrl?: string) => void;
+  onSendMessage: (
+    text: string,
+    attachments?: MessageAttachment[],
+    imageDataUrl?: string,
+    imageDataUrls?: string[]
+  ) => void;
   onLaunchVoiceMode: () => void;
   isLoading: boolean;
 }
@@ -22,7 +27,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 }) => {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
-  const [attachedImage, setAttachedImage] = useState<string | null>(null);
+  const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const [isDictating, setIsDictating] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -36,7 +41,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   }, [text]);
 
-  // Clean up speech recognition
+  // Clean up speech recognition on unmount
   useEffect(() => {
     return () => {
       if (recognitionRef.current) {
@@ -88,19 +93,32 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   };
 
   const handleSend = () => {
+    const hasImages = attachedImages.length > 0;
     const isFa = !text.trim() || /[\u0600-\u06FF]/.test(text);
-    const defaultImagePrompt = isFa
-      ? 'لطفاً مسئله و سوال موجود در این تصویر را به طور کامل، گام‌به‌گام و با ذکر محاسبات دقیق به زبان فارسی حل کن و در پایان پاسخ نهایی یا گزینه صحیح را صریحاً مشخص نما.'
-      : 'Please transcribe and solve the academic problem shown in this image step-by-step with formulas and state the final answer clearly.';
+
+    let defaultPrompt = '';
+    if (hasImages) {
+      if (attachedImages.length > 1) {
+        defaultPrompt = isFa
+          ? 'لطفاً تمامی سوالات و مسائل موجود در این تصاویر را به صورت دونه‌به‌دونه، گام‌به‌گام و با محاسبات دقیق و فرمول‌ها به زبان فارسی حل کن و در انتهای هر سوال، گزینه صحیح یا پاسخ نهایی را به صورت برجسته مشخص نما.'
+          : 'Please transcribe and solve all problems in these images step-by-step with formulas, answering each question one-by-one with clearly stated final answers.';
+      } else {
+        defaultPrompt = isFa
+          ? 'لطفاً مسئله و سوال موجود در این تصویر را به طور کامل، گام‌به‌گام و با ذکر محاسبات دقیق به زبان فارسی حل کن و در پایان پاسخ نهایی یا گزینه صحیح را صریحاً مشخص نما.'
+          : 'Please transcribe and solve the academic problem shown in this image step-by-step with formulas and state the final answer clearly.';
+      }
+    }
 
     onSendMessage(
-      text.trim() || (attachedImage ? defaultImagePrompt : ''),
+      text.trim() || defaultPrompt,
       attachments.length > 0 ? attachments : undefined,
-      attachedImage || undefined
+      attachedImages[0] || undefined,
+      hasImages ? attachedImages : undefined
     );
+
     setText('');
     setAttachments([]);
-    setAttachedImage(null);
+    setAttachedImages([]);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
@@ -114,12 +132,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    Array.from(files).forEach(file => {
       if (file.type.startsWith('image/')) {
         const reader = new FileReader();
         reader.onload = () => {
-          setAttachedImage(reader.result as string);
+          if (reader.result) {
+            setAttachedImages(prev => [...prev, reader.result as string]);
+          }
         };
         reader.readAsDataURL(file);
       } else {
@@ -130,8 +152,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           { name: file.name, size: sizeStr, type: file.name.endsWith('.pdf') ? 'pdf' : 'doc' },
         ]);
       }
-    }
-    // reset input
+    });
+
     if (e.target) e.target.value = '';
   };
 
@@ -145,7 +167,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           if (file) {
             const reader = new FileReader();
             reader.onload = () => {
-              setAttachedImage(reader.result as string);
+              if (reader.result) {
+                setAttachedImages(prev => [...prev, reader.result as string]);
+              }
             };
             reader.readAsDataURL(file);
             e.preventDefault();
@@ -156,6 +180,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   };
 
+  const removeImage = (index: number) => {
+    setAttachedImages(prev => prev.filter((_, i) => i !== index));
+  };
+
   const removeAttachment = (index: number) => {
     setAttachments(prev => prev.filter((_, i) => i !== index));
   };
@@ -163,44 +191,64 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const isPersian = /[\u0600-\u06FF]/.test(text);
 
   return (
-    <div className="w-full max-w-4xl mx-auto px-4 pb-4 sm:pb-6 pt-2">
-      {/* Hidden file input for images & documents */}
+    <div className="w-full max-w-4xl mx-auto px-4 pb-4 sm:pb-6 pt-1">
+      {/* Hidden file input for images & documents (supports multiple files) */}
       <input
         ref={fileInputRef}
         type="file"
         accept="image/*,.pdf"
+        multiple
         className="hidden"
         onChange={handleFileSelect}
       />
 
-      <div className="relative rounded-2xl sm:rounded-3xl border border-neutral-200 dark:border-neutral-700/80 bg-white dark:bg-neutral-900 shadow-xl dark:shadow-neutral-950/50 backdrop-blur-xl transition-all duration-200 focus-within:border-violet-500/80 dark:focus-within:border-violet-400/80 focus-within:ring-2 focus-within:ring-violet-500/20">
-        {/* Attached Image Thumbnail Preview */}
-        {attachedImage && (
-          <div className="p-3 pb-0 flex items-center gap-3">
-            <div className="relative inline-block rounded-xl overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-950 shadow-sm group">
-              <img
-                src={attachedImage}
-                alt="Attached preview"
-                className="h-16 w-auto max-w-[140px] object-cover"
-              />
+      <div className="relative rounded-2xl sm:rounded-3xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/90 shadow-lg dark:shadow-neutral-950/40 backdrop-blur-xl transition-all duration-200 focus-within:border-violet-500/80 dark:focus-within:border-violet-400/80 focus-within:ring-2 focus-within:ring-violet-500/20">
+        {/* Attached Images Gallery Preview */}
+        {attachedImages.length > 0 && (
+          <div className="p-3 pb-1 border-b border-neutral-100 dark:border-neutral-800/60">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-violet-600 dark:text-violet-400">
+                {attachedImages.length === 1
+                  ? 'تصویر پیوست شد (حل کامل سوالات با ویژن نکسورا)'
+                  : `${attachedImages.length} تصویر پیوست شد (حل دونه‌به‌دونه تمامی سوالات)`}
+              </span>
               <button
-                onClick={() => setAttachedImage(null)}
-                className="absolute top-1 right-1 p-1 rounded-full bg-black/70 hover:bg-black text-white transition-colors"
-                title="Remove image"
+                type="button"
+                onClick={() => setAttachedImages([])}
+                className="text-[11px] text-neutral-400 hover:text-rose-500 transition-colors"
               >
-                <X className="w-3 h-3" />
+                حذف همه
               </button>
             </div>
-            <div className="text-xs text-neutral-500 dark:text-neutral-400">
-              <span className="font-semibold text-violet-600 dark:text-violet-400 block">
-                Problem Image Attached & Ready
-              </span>
-              <span>Nexora Vision OCR will extract equations, diagrams, and text directly.</span>
+            <div className="flex flex-wrap gap-2.5">
+              {attachedImages.map((img, idx) => (
+                <div
+                  key={idx}
+                  className="relative group inline-block rounded-xl overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-950 shadow-xs"
+                >
+                  <img
+                    src={img}
+                    alt={`Attached ${idx + 1}`}
+                    className="h-16 w-auto max-w-[120px] object-cover"
+                  />
+                  <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/75 text-[10px] text-white font-mono">
+                    #{idx + 1}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeImage(idx)}
+                    className="absolute top-1 right-1 p-1 rounded-full bg-black/75 hover:bg-rose-600 text-white transition-colors"
+                    title="Remove this image"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         )}
 
-        {/* Attached Files Preview Chips */}
+        {/* Attached Documents Preview Chips */}
         {attachments.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 p-3 pb-0">
             {attachments.map((att, idx) => (
@@ -211,6 +259,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <span className="truncate max-w-[150px]">{att.name}</span>
                 <span className="text-[10px] text-neutral-400">({att.size})</span>
                 <button
+                  type="button"
                   onClick={() => removeAttachment(idx)}
                   className="p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
                 >
@@ -223,16 +272,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
         {/* Input Area */}
         <div className="flex items-end px-3 py-2 sm:px-4 sm:py-3 gap-2">
-          {/* Direct Image / Attachment Picker button */}
+          {/* Direct Image Picker button */}
           <button
+            type="button"
             onClick={() => fileInputRef.current?.click()}
             className="p-2 sm:p-2.5 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-violet-600 dark:hover:text-violet-400 transition-colors mb-1"
-            title="Attach image or problem sheet (Ctrl+V supported)"
+            title="Attach one or multiple images (Ctrl+V supported)"
           >
             <ImageIcon className="w-5 h-5" />
           </button>
 
           <button
+            type="button"
             onClick={() => fileInputRef.current?.click()}
             className="p-2 sm:p-2.5 rounded-xl hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors mb-1 hidden sm:flex"
             title="Attach document (PDF)"
@@ -249,9 +300,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={
-              attachedImage
-                ? 'Add specific instructions or questions for this image, or press Enter...'
-                : 'Ask Nexora any study question, or paste an image (Ctrl+V)...'
+              attachedImages.length > 0
+                ? 'دستور یا سوال مشخص برای این تصویرها بنویسید، یا اینتر بزنید...'
+                : 'هر سوال درسی دارید بپرسید یا عکس مسئله را بفرستید (Ctrl+V)...'
             }
             rows={1}
             className="w-full bg-transparent text-sm sm:text-base text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 dark:placeholder-neutral-500 focus:outline-none resize-none max-h-[180px] py-2 px-1 leading-relaxed"
@@ -259,7 +310,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
           {/* Right action buttons: Dictation Mic, Voice Mode, and Send */}
           <div className="flex items-center gap-1 sm:gap-1.5 mb-1">
-            {/* Live Voice Dictation Button (Transcribe voice to text input) */}
+            {/* Live Voice Dictation Button (Transcribes voice into text bar on demand) */}
             <button
               type="button"
               onClick={toggleDictation}
@@ -268,7 +319,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   ? 'bg-rose-500 text-white animate-pulse shadow-md shadow-rose-500/30'
                   : 'hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
               }`}
-              title={isDictating ? 'Listening... Click to stop voice dictation' : 'Voice Dictation (Speech to text)'}
+              title={isDictating ? 'در حال شنیدن صدای شما... برای توقف کلیک کنید' : 'تایپ صوتی فارسی (Speech to Text)'}
             >
               <Mic className="w-4 h-4 sm:w-5 sm:h-5" />
             </button>
@@ -278,7 +329,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               type="button"
               onClick={onLaunchVoiceMode}
               className="p-2 sm:p-2.5 rounded-xl bg-violet-50 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-900/50 border border-violet-200/60 dark:border-violet-800/50 transition-all active:scale-95 flex items-center gap-1.5"
-              title="Launch Fullscreen Spoken Voice Mode"
+              title="ورود به حالت گفتگوی صوتی زنده"
             >
               <Sparkles className="w-4 h-4 text-violet-500" />
               <span className="hidden sm:inline text-xs font-semibold">Voice Mode</span>
@@ -288,9 +339,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             <button
               type="button"
               onClick={handleSend}
-              disabled={(!text.trim() && !attachedImage && attachments.length === 0) || isLoading}
+              disabled={(!text.trim() && attachedImages.length === 0 && attachments.length === 0) || isLoading}
               className={`p-2.5 sm:p-3 rounded-xl transition-all duration-200 flex items-center justify-center active:scale-95 ${
-                text.trim() || attachedImage || attachments.length > 0
+                text.trim() || attachedImages.length > 0 || attachments.length > 0
                   ? 'bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:opacity-90 shadow-md'
                   : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-400 cursor-not-allowed'
               }`}
@@ -298,21 +349,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             >
               <ArrowUp className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.4]" />
             </button>
-          </div>
-        </div>
-
-        {/* Bottom subtle bar with model badge & keyboard hint */}
-        <div className="flex items-center justify-between px-4 pb-2.5 pt-0 text-[11px] text-neutral-400 border-t border-neutral-100 dark:border-neutral-800/40">
-          <div className="flex items-center gap-2">
-            <span className="flex items-center gap-1 text-violet-600 dark:text-violet-400 font-semibold">
-              <Sparkles className="w-3 h-3" />
-              Nexora AI Vision & Reasoning
-            </span>
-            <span className="hidden sm:inline text-neutral-300 dark:text-neutral-700">•</span>
-            <span className="hidden sm:inline">Multimodal OCR, clipboard paste & step-by-step solving</span>
-          </div>
-          <div className="hidden sm:flex items-center gap-2">
-            <span>Press <kbd className="px-1 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 font-mono text-[10px]">Enter</kbd> to send</span>
           </div>
         </div>
       </div>

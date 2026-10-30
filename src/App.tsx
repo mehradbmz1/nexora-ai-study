@@ -97,6 +97,9 @@ export function App() {
   }, [currentUser]);
 
   const handleNewChat = () => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
     if (currentUser) {
       setActiveConversationId(null);
     } else {
@@ -106,6 +109,9 @@ export function App() {
   };
 
   const handleSelectConversation = (id: string) => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
     if (currentUser) {
       setActiveConversationId(id);
     }
@@ -153,21 +159,25 @@ export function App() {
     }
   };
 
-  // Dispatch message to AI (with optional image)
+  // Dispatch message to AI (with optional single or multiple images)
   const handleSendMessage = async (
     text: string,
     attachments?: MessageAttachment[],
-    imageDataUrl?: string
+    imageDataUrl?: string,
+    imageDataUrls?: string[]
   ) => {
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const isPersian = /[\u0600-\u06FF]/.test(text);
+
+    const firstImage = imageDataUrls && imageDataUrls.length > 0 ? imageDataUrls[0] : imageDataUrl;
 
     const userMessage: ChatMessage = {
       id: `msg-${Date.now()}-user`,
       role: 'user',
       content: text,
       attachments,
-      imageDataUrl,
+      imageDataUrl: firstImage,
+      imageDataUrls: imageDataUrls && imageDataUrls.length > 0 ? imageDataUrls : (imageDataUrl ? [imageDataUrl] : undefined),
       language: isPersian ? 'fa' : 'en',
       timestamp: now,
     };
@@ -208,17 +218,29 @@ export function App() {
     // 2. Call AI Reasoning & Multimodal Vision with selected Cloudflare model & context history
     setIsLoading(true);
     try {
-      const historyPayload = currentMessages.map(m => ({
+      // Capture full conversational memory within the current chat (up to 20 recent messages)
+      const fullHistory = [...currentMessages, userMessage];
+      const historyPayload = fullHistory.slice(-20).map(m => ({
         role: m.role,
         content: m.content,
       }));
 
+      const userContext = currentUser
+        ? {
+            firstName: currentUser.firstName,
+            lastName: currentUser.lastName,
+            email: currentUser.email,
+          }
+        : undefined;
+
       const aiResponse = await ChatSyncService.sendToAI(
         text,
-        imageDataUrl,
+        firstImage,
         settings.curriculum,
         settings.selectedModelId,
-        historyPayload
+        historyPayload,
+        imageDataUrls,
+        userContext
       );
       const activeModelMeta = getAiModelById(settings.selectedModelId);
       const assistantMessage: ChatMessage = {
@@ -382,16 +404,18 @@ export function App() {
         />
       </div>
 
-      {/* Full-Screen Voice Mode Interface */}
-      <VoiceOverlay
-        isOpen={isVoiceModeOpen}
-        onClose={handleCloseVoiceMode}
-        activePersona={settings.persona}
-        onSelectPersona={persona => setSettings(prev => ({ ...prev, persona }))}
-        initialTopicTitle={activeConversation?.title || 'Voice Study Session'}
-        selectedModelId={settings.selectedModelId}
-        conversationHistory={currentMessages}
-      />
+      {/* Full-Screen Voice Mode Interface (Mounts ONLY when opened, so mic is never requested on page load) */}
+      {isVoiceModeOpen && (
+        <VoiceOverlay
+          isOpen={isVoiceModeOpen}
+          onClose={handleCloseVoiceMode}
+          activePersona={settings.persona}
+          onSelectPersona={persona => setSettings(prev => ({ ...prev, persona }))}
+          initialTopicTitle={activeConversation?.title || 'Voice Study Session'}
+          selectedModelId={settings.selectedModelId}
+          conversationHistory={currentMessages}
+        />
+      )}
 
       {/* Settings Modal */}
       <SettingsModal

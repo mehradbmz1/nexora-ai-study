@@ -62,9 +62,23 @@ function sanitizeAiResponse(raw: string, persian: boolean): string {
   if (!raw) return '';
   let s = raw;
   if (persian) {
+    // Replace Chinese homoglyphs
     s = s.replace(/作用/g, 'اثر');
-    s = s.replace(/[\u4e00-\u9fa5]/g, '');
-    s = s.replace(/\baquí\b/gi, '');
+    s = s.replace(/是的/g, 'بله');
+    s = s.replace(/但是/g, 'اما');
+    s = s.replace(/因为/g, 'زیرا');
+    s = s.replace(/所以/g, 'بنابراین');
+    // Remove all Chinese / CJK characters & ideographs & symbols
+    s = s.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/g, '');
+    // Remove foreign tokens leaked by tokenizer
+    s = s.replace(/\baqu[íi]\b/gi, '');
+    s = s.replace(/\bHola\b/gi, '');
+    s = s.replace(/\bpero\b/gi, '');
+    s = s.replace(/\bcomo\b/gi, '');
+    s = s.replace(/\bpara\b/gi, '');
+    // Clean multiple consecutive spaces or empty parentheses
+    s = s.replace(/\(\s*\)/g, '');
+    s = s.replace(/[ \t]{2,}/g, ' ');
   }
   return s.trim();
 }
@@ -337,54 +351,79 @@ function normalizeModelId(modelId?: string): string {
         const body = await request.json() as {
           prompt?: string;
           imageDataUrl?: string;
+          imageDataUrls?: string[];
           curriculum?: string;
           modelId?: string;
+          user?: { firstName?: string; lastName?: string; email?: string };
           messages?: { role: 'user' | 'assistant'; content: string }[];
         };
 
         const prompt = body.prompt || '';
         const curriculum = body.curriculum || 'iran';
-        const rawModelId = body.modelId || (body.imageDataUrl ? '@cf/meta/llama-3.2-11b-vision-instruct' : '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
+        const rawModelId = body.modelId || (body.imageDataUrl || (body.imageDataUrls && body.imageDataUrls.length > 0)
+          ? '@cf/meta/llama-3.2-11b-vision-instruct'
+          : '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
         const modelId = normalizeModelId(rawModelId);
         const isPersian =
           curriculum === 'iran' ||
           /[\u0600-\u06FF]/.test(prompt) ||
           (body.messages && body.messages.some(m => /[\u0600-\u06FF]/.test(m.content)));
 
-        if (env.AI) {
-          if (body.imageDataUrl) {
-            const base64Clean = body.imageDataUrl.replace(/^data:image\/[a-z]+;base64,/, '');
-            const binaryString = atob(base64Clean);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-              bytes[i] = binaryString.charCodeAt(i);
-            }
+        // Gather all image URLs provided
+        const allImages: string[] = [];
+        if (body.imageDataUrls && Array.isArray(body.imageDataUrls)) {
+          allImages.push(...body.imageDataUrls.filter(Boolean));
+        } else if (body.imageDataUrl) {
+          allImages.push(body.imageDataUrl);
+        }
 
-            const visionPrompt = isPersian
-              ? `شما «نکسورا» هستید؛ متخصص حل مسائل درسی، تست‌های کنکور و امتحانات نهایی از روی عکس.
-یک تصویر آموزشی شامل سوال یا مسئله برای شما ارسال شده است.
+        if (env.AI) {
+          if (allImages.length > 0) {
+            const solvedParts: string[] = [];
+
+            for (let i = 0; i < allImages.length; i++) {
+              const imgData = allImages[i];
+              const base64Clean = imgData.replace(/^data:image\/[a-z]+;base64,/, '');
+              const binaryString = atob(base64Clean);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let j = 0; j < binaryString.length; j++) {
+                bytes[j] = binaryString.charCodeAt(j);
+              }
+
+              const visionPrompt = isPersian
+                ? `شما «نکسورا» (Nexora) هستید؛ استاد و مدرس برجسته در حل مسائل درسی، کنکور، تست‌ها و امتحانات نهایی.
+${allImages.length > 1 ? `این تصویر شماره ${i + 1} از مجموع ${allImages.length} تصویر ارسالی دانش‌آموز است.` : 'یک تصویر درسی شامل سوال یا مسئله برای شما ارسال شده است.'}
+
 وظایف صریح و الزامی شما:
-۱. بازنویسی متن صورت سوال: ابتدا متن و داده‌های مسئله موجود در این عکس را دقیق بازنویسی کن.
-۲. حل گام‌به‌گام و تشریحی: مسئله را به صورت مرحله به مرحله با فرمول‌ها و محاسبات دقیق ریاضی/فیزیک/شیمی به زبان فارسی روان حل کن.
-۳. پاسخ نهایی قطعی: در آخرین خط پاسخ، گزینه صحیح یا پاسخ عددی نهایی را به صورت برجسته اعلام کن:
+۱. حل دونه‌به‌دونه: اگر در این تصویر یک یا چند سوال وجود دارد، تمام سوالات را جداگانه شماره‌گذاری کن (مثلاً: **سوال ۱:**، **سوال ۲:** و...).
+۲. بازنویسی متن هر سوال: صورت و داده‌های هر مسئله را دقیق بازنویسی کن.
+۳. حل تشریحی و گام‌به‌گام: با فرمول‌ها، محاسبات کامل ریاضی/فیزیک/شیمی و استدلال علمی به زبان فارسی روان حل کن.
+۴. پاسخ نهایی قطعی: در انتهای هر سوال، گزینه صحیح یا پاسخ نهایی را به صورت برجسته اعلام کن:
 **پاسخ نهایی / گزینه صحیح: [پاسخ]**
 
-${prompt && !prompt.includes('Analyze and solve') ? `دستور کاربر: ${prompt}` : ''}
-تمام پاسخ باید کاملاً به زبان فارسی شیوا و سلیس باشد.`
-              : `You are Nexora Vision, an expert STEM tutor.
-Examine this image carefully:
-1. Transcribe the exact problem statement and formulas from the image.
-2. Provide a rigorous, step-by-step solution with all equations clearly explained.
-3. Clearly highlight the final answer or correct option at the end.
+${prompt && !prompt.includes('Analyze and solve') ? `دستور ویژه دانش‌آموز: ${prompt}` : ''}
+پاسخ باید ۱۰۰٪ به زبان فارسی شیوا، سلیس و بدون کلمات زبان‌های دیگر باشد.`
+                : `You are Nexora Vision, an expert STEM tutor.
+${allImages.length > 1 ? `This is image ${i + 1} of ${allImages.length}.` : 'An image containing academic problems has been provided.'}
+Solve each question on this image one by one step-by-step with formulas and state the final answer clearly.
 User prompt: ${prompt || 'Solve this problem step-by-step.'}`;
 
-            const aiRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
-              prompt: visionPrompt,
-              image: Array.from(bytes),
-            });
+              const aiRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
+                prompt: visionPrompt,
+                image: Array.from(bytes),
+              });
 
-            const rawVision = aiRes?.response || (isPersian ? 'تصویر با موفقیت بازخوانی و حل شد.' : 'Image transcribed and solved successfully.');
-            const content = sanitizeAiResponse(rawVision, isPersian);
+              const rawVision = aiRes?.response || (isPersian ? 'تصویر با موفقیت بازخوانی و حل شد.' : 'Image transcribed and solved successfully.');
+              const cleanPart = sanitizeAiResponse(rawVision, isPersian);
+
+              if (allImages.length > 1) {
+                solvedParts.push(`### 📷 تصویر شماره ${i + 1}\n\n${cleanPart}`);
+              } else {
+                solvedParts.push(cleanPart);
+              }
+            }
+
+            const content = solvedParts.join('\n\n---\n\n');
 
             return jsonResponse({
               success: true,
@@ -397,30 +436,38 @@ User prompt: ${prompt || 'Solve this problem step-by-step.'}`;
                 { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
               ],
               followUps: isPersian ? [
-                'یک روش دوم یا راه تستی برای حل این مسئله بگو',
-                'یک تست مشابه از همین مبحث از من بپرس',
-                'فرمول‌های به کار رفته را بیشتر توضیح بده'
+                'می‌توانی یک سوال تستی چهارگزینه‌ای از این مبحث بپرسی؟',
+                'یک سوال تشریحی مفهومی از من بپرس تا یادگیری‌ام را بسنجم',
+                'یک روش دوم یا راه میان‌بر تستی برای این مسئله بگو'
               ] : [
-                'Can you solve this using an alternative method?',
-                'Test my understanding with a similar problem',
-                'Explain the underlying formulas in detail'
+                'Test my understanding with a multiple-choice question',
+                'Ask me a conceptual practice question',
+                'Can you solve this using an alternative method?'
               ]
             });
           } else {
             // Conversational memory: incorporate previous turns
+            const userGreeting = body.user?.firstName
+              ? `دانش‌آموز گرامی: «${body.user.firstName} ${body.user.lastName || ''}»`
+              : '';
+
             const systemPrompt = isPersian
-              ? `شما «نکسورا» (Nexora) هستید؛ یک دستیار مطالعاتی و تحصیلی هوشمند، دقیق، مسلط و صمیمی.
-دستورالعمل‌های حیاتی:
-۱. زبان پاسخ: تمام پاسخ‌های شما باید ۱۰۰٪ به زبان فارسی رسمی، بسیار روان، شیوا، علمی، سلیس و کاملاً طبیعی با رسم‌الخط استاندارد فارسی باشد. اکیداً از به کار بردن کاراکترهای چینی، لغات اسپانیایی (مانند aquí) یا کلمات انگلیسی در میان متن فارسی خودداری کن و واژگان صحیح فارسی مانند «وارد شود»، «اثر کند»، «اعمال شود» به کار ببر.
-۲. درک و حل مسئله: اگر کاربر سوالی پرسید، سریعاً به اصل موضوع بپردازید و به صورت گام‌به‌گام و مستدل توضیح دهید یا حل کنید و پاسخ نهایی را صریحاً بنویسید.
-۳. پیوستگی مکالمه: تمام پیام‌های قبلی کاربر را به خاطر بسپارید و پاسخ‌های بعدی را در امتداد گفتگو ارائه دهید.
-۴. زیبایی و نظم: از تیترهای خوانا، بولت‌پوینت‌های مرتب و فرمول‌های تمیز استفاده کنید.
-۵. آزمون و تست: فقط و فقط زمانی سوال تستی مطرح کنید که کاربر صریحاً درخواست تست، آزمون یا کوییز کرده باشد؛ در غیر این صورت به پاسخ مستقیم و روان بپردازید.`
+              ? `شما «نکسورا» (Nexora) هستید؛ یک استاد و معلم خصوصی دانشمند، بسیار مسلط، دقیق، شکیبا و صمیمی.
+${userGreeting ? `شما با ${userGreeting} گفتگو می‌کنید و اطلاعات و سطح درسی ایشان را در طول گفتگوهای این نشست حفظ می‌نمایید.` : ''}
+
+دستورالعمل‌های الزامی:
+۱. زبان پاسخ: تمام پاسخ‌های شما باید ۱۰۰٪ به زبان فارسی رسمی، بسیار روان، شیوا، علمی، سلیس و کاملاً طبیعی با رسم‌الخط استاندارد فارسی باشد. اکیداً از به کار بردن کاراکترهای چینی، لغات اسپانیایی یا کلمات انگلیسی در میان متن فارسی خودداری کن و واژگان صحیح فارسی مانند «وارد شود»، «اثر کند»، «اعمال شود» به کار ببر.
+۲. توضیحات کامل، جامع و طولانی: پاسخ‌ها را خلاصه یا ناقص رها نکن. برای هر پرسش، مفاهیم پایه‌ای، تعاریف علمی، فرمول‌های مرتبط، مثال‌های روشن و نتیجه‌گیری دقیق را به صورت گام‌به‌گام و طولانی شرح بده تا موضوع به شکل عمیق درک شود.
+۳. حل دقیق مسائل: کلیه محاسبات، فرمول‌های ریاضی و اصول فیزیک/شیمی باید کاملاً معتبر و اثبات‌شده باشند و پاسخ نهایی صریحاً نوشته شود.
+۴. پیوستگی مکالمه و حافظه: تمام پیام‌های قبلی کاربر در همین گفتگو را به خاطر بسپارید و پاسخ‌های جدید را کاملاً در امتداد مباحث مطرح‌شده قبلی ارائه دهید.
+۵. عدم تحمیل آزمون تستی: هرگز و تحت هیچ شرایطی به صورت خودسرانه یا پشت‌سرهم سوال تستی مطرح نکنید. در صورتی که مبحث پایان یافت یا برای سنجش تسلط نیاز به تمرین بود، در پایان با احترام پیشنهاد دهید:
+«💡 آیا مایلید برای سنجش تسلط شما بر این مبحث، یک تست چهارگزینه‌ای مطرح کنم یا یک سوال تشریحی مفهومی؟»`
               : `You are Nexora AI, a world-class academic study assistant.
+${body.user?.firstName ? `Student: ${body.user.firstName} ${body.user.lastName || ''}` : ''}
 Rules:
-1. Deliver articulate, elegant explanations in English.
+1. Deliver articulate, comprehensive, and step-by-step academic explanations in English.
 2. Solve problems step-by-step with formulas and highlighted final answers.
-3. Retain conversational memory across previous turns.
+3. Retain conversational memory across previous turns within this session.
 4. Only ask test questions if explicitly requested by the student.`;
 
             const llmMessages: { role: string; content: string }[] = [
@@ -428,8 +475,8 @@ Rules:
             ];
 
             if (body.messages && Array.isArray(body.messages)) {
-              // Take up to last 8 messages for context
-              const recent = body.messages.slice(-8);
+              // Take up to last 20 messages for deep conversational memory
+              const recent = body.messages.slice(-20);
               for (const m of recent) {
                 if (m.role === 'user' || m.role === 'assistant') {
                   llmMessages.push({ role: m.role, content: m.content });
@@ -446,7 +493,8 @@ Rules:
             }
 
             const aiRes = await env.AI.run(modelId, {
-              messages: llmMessages
+              messages: llmMessages,
+              max_tokens: 3500
             });
 
             const rawContent = aiRes?.response || (isPersian ? 'پاسخ دریافت گردید.' : 'Response received.');
@@ -454,13 +502,13 @@ Rules:
 
             // Generate smart, contextually-relevant follow-up prompts
             const followUps = isPersian ? [
-              'می‌توانی یک مثال کاربردی‌تر از این موضوع بزنی؟',
-              'یک تست چهارگزینه‌ای از این مبحث از من بپرس',
-              'این مفهوم در امتحان چطور سوال می‌آید؟'
+              'می‌توانی یک سوال تستی چهارگزینه‌ای از این مبحث بپرسی؟',
+              'یک سوال تشریحی مفهومی از من بپرس تا یادگیری‌ام را بسنجم',
+              'یک مثال کاربردی‌تر از این موضوع بزن'
             ] : [
-              'Can you give another real-world example?',
-              'Test my understanding with a practice question',
-              'How does this typically appear on exams?'
+              'Test my understanding with a multiple-choice question',
+              'Ask me a conceptual practice question',
+              'Can you give another real-world example?'
             ];
 
             return jsonResponse({
