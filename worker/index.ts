@@ -98,34 +98,58 @@ function sanitizeAiResponse(raw: string, persian: boolean): string {
 async function searchAcademicSources(query: string, isPersian: boolean): Promise<{ title: string; snippet: string; url: string }[]> {
   try {
     const clean = query
-      .replace(/لطفاً|حل کن|توضیح بده|بگو|گزینه|چیست|چگونه|پاسخ|تست|مسئله|تصویر|عکس|حل|در مورد|درباره/gi, '')
+      .replace(/سلام|درود|خوبی|چطوری|صبح بخیر|عصر بخیر|لطفاً|حل کن|توضیح بده|بگو|گزینه|چیست|چگونه|پاسخ|تست|مسئله|تصویر|عکس|حل|در مورد|درباره|معنی|مفهوم|سوال بپرس/gi, '')
       .replace(/[?!؟.,;:]/g, '')
       .trim();
 
-    const searchTerm = clean.slice(0, 50).trim();
+    const searchTerm = clean.slice(0, 40).trim();
     if (!searchTerm || searchTerm.length < 2) return [];
 
     const lang = isPersian ? 'fa' : 'en';
-    const apiUrl = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(searchTerm)}&format=json&origin=*&srlimit=3`;
+    const searchUrl = `https://${lang}.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(searchTerm)}&limit=2&namespace=0&format=json&origin=*`;
 
-    const res = await fetch(apiUrl, {
+    const res = await fetch(searchUrl, {
       headers: { 'User-Agent': 'NexoraAIStudyPlatform/2.0' }
     });
     if (!res.ok) return [];
 
-    const data = await res.json() as any;
-    if (data.query?.search && Array.isArray(data.query.search)) {
-      return data.query.search.slice(0, 3).map((item: any) => ({
-        title: item.title,
-        snippet: (item.snippet || '')
-          .replace(/<[^>]+>/g, '')
-          .replace(/&quot;/g, '"')
-          .replace(/&#039;/g, "'")
-          .replace(/&amp;/g, '&')
-          .trim(),
-        url: `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(item.title.replace(/ /g, '_'))}`
-      }));
+    const data = await res.json() as [string, string[], string[], string[]];
+    const titles = data[1] || [];
+    const urls = data[3] || [];
+
+    if (titles.length === 0) return [];
+
+    const results: { title: string; snippet: string; url: string }[] = [];
+
+    for (let i = 0; i < Math.min(titles.length, 2); i++) {
+      const title = titles[i];
+      const pageUrl = urls[i] || `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, '_'))}`;
+      try {
+        const sumRes = await fetch(`https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`, {
+          headers: { 'User-Agent': 'NexoraAIStudyPlatform/2.0' }
+        });
+        if (sumRes.ok) {
+          const sumData = await sumRes.json() as any;
+          if (sumData.extract) {
+            results.push({
+              title: sumData.title || title,
+              snippet: (sumData.extract || '').slice(0, 200),
+              url: pageUrl
+            });
+            continue;
+          }
+        }
+      } catch {
+        // Fallback
+      }
+      results.push({
+        title,
+        snippet: `مدخل علمی تخصصی «${title}»`,
+        url: pageUrl
+      });
     }
+
+    return results;
   } catch {
     // Fail gracefully without interrupting main AI flow
   }
@@ -474,8 +498,9 @@ function normalizeModelId(modelId?: string): string {
           allImages.push(body.imageDataUrl);
         }
 
-        // Live Academic References Search
-        const academicSources = await searchAcademicSources(prompt, isPersian);
+        // Live Academic References Search (skip in voice mode or short conversational greetings)
+        const isGreetingOrShort = /^(سلام|درود|خوبی|چطوری|صبح بخیر|عصر بخیر|سلام علیکم|hello|hi|hey)[\s!.,؟]*$/i.test(prompt.trim()) || prompt.trim().length < 3;
+        const academicSources = (isVoice || isGreetingOrShort) ? [] : await searchAcademicSources(prompt, isPersian);
         let academicContext = '';
         if (academicSources.length > 0) {
           academicContext = `\n\n### مراجع علمی و مستندات یافت‌شده برای این موضوع:\n` +
@@ -725,17 +750,21 @@ Rules:
               'Can you give another real-world example?'
             ];
 
-            const citations = academicSources.length > 0
-              ? academicSources.map(s => ({
-                  title: s.title,
-                  url: s.url,
-                  source: isPersian ? 'دانشنامه علمی' : 'Academic Reference'
-                }))
-              : (isPersian ? [
-                  { title: 'کتاب‌های درسی رسمی آموزش و پرورش', url: 'http://chap.sch.ir', source: 'آموزش و پرورش' },
-                  { title: 'شبکه ملی رشد', url: 'https://roshd.ir', source: 'رشد' },
-                  { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
-                ] : []);
+            const citations = isVoice
+              ? []
+              : (academicSources.length > 0
+                ? academicSources.map(s => ({
+                    title: s.title,
+                    url: s.url,
+                    source: isPersian ? 'دانشنامه علمی' : 'Academic Reference'
+                  }))
+                : (isGreetingOrShort
+                  ? []
+                  : (isPersian ? [
+                      { title: 'کتاب‌های درسی رسمی آموزش و پرورش', url: 'http://chap.sch.ir', source: 'آموزش و پرورش' },
+                      { title: 'شبکه ملی رشد', url: 'https://roshd.ir', source: 'رشد' },
+                      { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
+                    ] : [])));
 
             return jsonResponse({
               success: true,
