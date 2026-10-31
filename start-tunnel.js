@@ -34,7 +34,12 @@ function startCloudflared() {
 
   currentProcess = spawn(
     CLOUDFLARED_PATH,
-    ['tunnel', '--protocol', 'http2', '--edge-ip-version', '4', '--url', 'http://localhost:5173'],
+    [
+      'tunnel',
+      '--protocol', 'quic',
+      '--url', 'https://nexora-ai-study.nexo-ai.workers.dev',
+      '--http-host-header', 'nexora-ai-study.nexo-ai.workers.dev'
+    ],
     { stdio: ['ignore', 'pipe', 'pipe'] }
   );
 
