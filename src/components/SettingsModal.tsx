@@ -12,6 +12,7 @@ import {
   Database,
   Check,
   Cpu,
+  GraduationCap,
 } from 'lucide-react';
 import type { AppSettings, VoicePersona, EducationalCurriculum } from '../types';
 import { VOICE_PERSONAS } from '../data/mockData';
@@ -196,6 +197,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 >
                   <span className="text-base">{c.flag}</span>
                   <span>{c.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Setting Section: Educational Grade / Class Level */}
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 mb-2 flex items-center gap-1.5">
+              <GraduationCap className="w-3.5 h-3.5 text-violet-500" />
+              <span>پایه و مقطع تحصیلی (Class / Grade Level)</span>
+            </label>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {[
+                { id: 'دهم', label: 'پایه دهم (متوسطه دوم)' },
+                { id: 'یازدهم', label: 'پایه یازدهم' },
+                { id: 'دوازدهم / کنکور', label: 'دوازدهم / کنکور' },
+                { id: 'نهم', label: 'پایه نهم (متوسطه اول)' },
+                { id: 'هفتم و هشتم', label: 'پایه هفتم / هشتم' },
+                { id: 'دانشگاهی', label: 'دانشجویی / دانشگاه' },
+              ].map(g => (
+                <button
+                  key={g.id}
+                  onClick={() => {
+                    localStorage.setItem('nexora_grade_level', g.id);
+                    onUpdateSettings({ gradeLevel: g.id });
+                  }}
+                  className={`p-2.5 rounded-2xl border text-xs text-center transition-all ${
+                    (settings.gradeLevel || localStorage.getItem('nexora_grade_level') || 'دوازدهم / کنکور') === g.id
+                      ? 'border-violet-500 bg-violet-500/10 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300 ring-1 ring-violet-500 font-semibold'
+                      : 'border-neutral-200 dark:border-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800/60'
+                  }`}
+                >
+                  {g.label}
                 </button>
               ))}
             </div>

@@ -147,8 +147,8 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
         </button>
       </div>
 
-      {/* Status helper info */}
-      <div className="flex items-center gap-3 text-xs text-neutral-400">
+      {/* Status & Noise Cancelling Indicator */}
+      <div className="flex items-center gap-3 text-xs text-neutral-400 flex-wrap justify-center">
         <span className="flex items-center gap-1.5">
           <span
             className={`w-2 h-2 rounded-full ${
@@ -161,14 +161,17 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
                 : 'bg-amber-400'
             }`}
           />
-          Status: <strong className="capitalize text-neutral-200">
-            {state === 'listening' ? 'Listening' : state === 'thinking' ? 'Thinking' : state === 'speaking' ? 'Speaking' : 'Muted'}
+          وضعیت: <strong className="text-neutral-200">
+            {state === 'listening' ? 'در حال شنیدن...' : state === 'thinking' ? 'در حال فکر و تبدیل...' : state === 'speaking' ? 'در حال صحبت' : 'میکروفون بسته'}
           </strong>
         </span>
         <span>•</span>
-        <span>{useRealMic ? 'Live Hardware Mic' : 'Nexora Voice Engine'}</span>
+        <span className="flex items-center gap-1 text-emerald-400 font-medium">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+          <span>نویز کنسلینگ هوشمند فعال (تحدید صدای نزدیک)</span>
+        </span>
         <span>•</span>
-        <span>Multilingual Voice Support</span>
+        <span>پشتیبانی چندزبانه</span>
       </div>
     </div>
   );

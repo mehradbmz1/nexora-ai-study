@@ -445,12 +445,15 @@ function normalizeModelId(modelId?: string): string {
           imageDataUrls?: string[];
           curriculum?: string;
           modelId?: string;
-          user?: { firstName?: string; lastName?: string; email?: string };
+          user?: { firstName?: string; lastName?: string; email?: string; gradeLevel?: string };
           messages?: { role: 'user' | 'assistant'; content: string }[];
+          isVoiceMode?: boolean;
         };
 
         const prompt = body.prompt || '';
         const curriculum = body.curriculum || 'iran';
+        const isVoice = !!body.isVoiceMode;
+        const userGrade = body.user?.gradeLevel || '';
         const rawModelId = body.modelId || (body.imageDataUrl || (body.imageDataUrls && body.imageDataUrls.length > 0)
           ? '@cf/meta/llama-3.2-11b-vision-instruct'
           : '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
@@ -501,8 +504,8 @@ Examine this image with extreme care and extract all details verbatim:
 1. Exact transcription of every problem, question statement, numbers, units, variables, and formulas. If in Persian/Farsi, transcribe the Persian text exactly.
 2. Exact transcription of all multiple-choice options (1, 2, 3, 4 or الف، ب، ج، د) and their values.
 3. Description and labels of any diagrams, charts, circuits, or geometric shapes.
-4. Provide an initial step-by-step mathematical or scientific solution for each question.
-Do NOT use asterisks.`;
+4. If the question asked is not present in the image or the image is illegible, clearly note: "QUESTION_NOT_FOUND".
+Do NOT invent or hallucinate any questions not visible in the image.`;
 
                 const visionRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
                   prompt: ocrPrompt,
@@ -521,15 +524,19 @@ Do NOT use asterisks.`;
                 ? `شما «نکسورا» (Nexora) هستید؛ استاد و مدرس برجسته کنکور، امتحانات نهایی و حل مسائل درسی.
 وظیفه شما حل کامل، گام‌به‌گام، مستدل و دقیق تمامی سوالات استخراج‌شده از تصویر ارسالی دانش‌آموز است.
 
-دستورالعمل‌های حیاتی برای حل کامل و ضدباگ:
-۱. اکیداً از علامت ستاره (* یا **) در سراسر پاسخ خودداری کن. هیچ ستاره‌ای نباید در متن ظاهر شود.
-۲. حل کامل و دونه‌به‌دونه: تمام سوالات تصویر را به صورت جداگانه (سوال ۱:، سوال ۲: و...) شماره‌گذاری کن.
-۳. صورت کامل هر سوال، مقادیر داده‌شده و گزینه‌ها را دقیق بنویس.
-۴. حل تشریحی و عمیق: هرگز خلاصه یا کوتاه ننویس. مراحل حل را با فرمول‌های علمی، محاسبات دقیق ریاضی/فیزیک/شیمی و استدلال مستحکم به فارسی سلیس و روان شرح بده. علت درستی گزینه صحیح و دلیل رد سایر گزینه‌ها را با اثبات علمی تشریح کن.
-۵. پاسخ نهایی: در پایان هر سوال، بدون ستاره بنویس:
+دستورالعمل‌های حیاتی برای حل کامل، دقیق و بدون توهم (ضدباگ):
+۱. قانون صداقت دیداری (عدم توهم): اگر کاربر درباره سوال، موضوع، فرمول یا مطلبی پرسید که در تصویر وجود ندارد، یا تصویر ناخواناست، صریحاً، قاطعانه و بدون هیچ حدس زدنی بگو:
+«من چیزی در این باره در تصویر نمی‌بینم.»
+اکیداً از پیش‌بینی خیالی، حدس زدن یا پاسخ به سوالاتی که در عکس وجود ندارند خودداری کن.
+۲. اکیداً از علامت ستاره (* یا **) در سراسر پاسخ خودداری کن. هیچ ستاره‌ای نباید در متن ظاهر شود.
+۳. حل کامل و دونه‌به‌دونه: تمام سوالاتی که واقعاً در تصویر وجود دارند را به صورت جداگانه (سوال ۱:، سوال ۲: و...) شماره‌گذاری کن.
+۴. صورت کامل هر سوال موجود در عکس، مقادیر داده‌شده و گزینه‌ها را دقیق بنویس.
+۵. حل تشریحی و عمیق: محاسبات را با فرمول‌های علمی، محاسبات دقیق و استدلال مستحکم به فارسی سلیس و روان شرح بده. علت درستی گزینه صحیح و دلیل رد سایر گزینه‌ها را با اثبات علمی تشریح کن.
+۶. پاسخ نهایی: در پایان هر سوال، بدون ستاره بنویس:
 پاسخ نهایی: [پاسخ یا گزینه صحیح]`
                 : `You are Nexora AI, a premier academic problem-solving tutor.
 Solve each problem from the image transcription step-by-step with formulas, calculations, and clear proofs.
+If the requested question or topic is NOT visible in the image, strictly respond: "I cannot see anything about this in the image."
 Do NOT use asterisks (* or **) in your output.
 State the final answer clearly without asterisks.`;
 
@@ -540,13 +547,15 @@ State the final answer clearly without asterisks.`;
 """
 ${combinedOcr}
 """
-تمام محاسبات و گزینه‌ها را در ذهن خود با دقت صددرصد بازبینی کن تا هیچ باگی رخ ندهد. سپس بدون ستاره و بدون هیچ توضیح اضافه، فقط گزینه صحیح را اعلام کن:
+اگر سوال یا گزینه‌ها در تصویر موجود نیستند، بگو: «من چیزی در این باره در تصویر نمی‌بینم.»
+در غیر این صورت، تمام محاسبات و گزینه‌ها را در ذهن خود با دقت صددرصد بازبینی کن تا هیچ باگی رخ ندهد. سپس بدون ستاره و بدون هیچ توضیح اضافه، فقط گزینه صحیح را اعلام کن:
 گزینه صحیح: گزینه [شماره گزینه]`
                     : `Based on this transcribed image:
 """
 ${combinedOcr}
 """
-The user requested ONLY the option. Verify rigorously, then output ONLY without asterisks:
+If not found in the image, say: "I cannot see anything about this in the image."
+Otherwise, output ONLY without asterisks:
 Correct Option: Option [X]`)
                 : (isPersian
                     ? `محتوای استخراج‌شده از تصویر ارسالی:
@@ -555,13 +564,15 @@ ${combinedOcr}
 """
 ${academicContext}
 ${prompt && !prompt.includes('لطفاً') ? `درخواست ویژه دانش‌آموز: ${prompt}` : ''}
-لطفاً تمام سوالات این تصویر را به صورت دونه‌به‌دونه، کامل، تشریحی و با فرمول‌ها و محاسبات دقیق حل کن و در پایان هر سوال، گزینه صحیح را مشخص نما. به هیچ وجه از ستاره استفاده نکن.`
+اگر مطلب یا سوالی که کاربر خواسته در تصویر موجود نیست، فقط و فقط بگو: «من چیزی در این باره در تصویر نمی‌بینم.»
+در غیر این صورت، تمام سوالات این تصویر را به صورت دونه‌به‌دونه، کامل، تشریحی و با فرمول‌ها و محاسبات دقیق حل کن و در پایان هر سوال، گزینه صحیح را مشخص نما. به هیچ وجه از ستاره استفاده نکن.`
                     : `Here is the transcribed content from the image:
 """
 ${combinedOcr}
 """
 User prompt: ${prompt || 'Solve all problems step-by-step with complete formulas.'}
-Solve each question in detail without asterisks.`);
+If not visible in the image, say: "I cannot see anything about this in the image."
+Otherwise, solve each question in detail without asterisks.`);
 
               const solverRes = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
                 messages: [
@@ -616,6 +627,8 @@ Solve each question in detail without asterisks.`);
               ? `دانش‌آموز گرامی: «${body.user.firstName} ${body.user.lastName || ''}»`
               : '';
 
+            const isAskingForQuiz = /سوال\s*(بپرس|طرح\s*کن|مطرح\s*کن|بده)|تست\s*(بپرس|طرح\s*کن|بزن|بده)|کوئیز\s*(بگیر|بپرس)|از\s*من\s*سوال|امتحان\s*بگیر|ask\s*(me\s*)?(a\s*)?question/i.test(prompt);
+
             const reasoningDirective = wantsOnlyOption
               ? `کاربر صریحاً خواسته است که «فقط گزینه» مشخص شود.
 الزام حیاتی ضدباگ:
@@ -629,26 +642,47 @@ Solve each question in detail without asterisks.`);
 ۴. در پایان پس از اثبات کامل، گزینه صحیح یا پاسخ نهایی را به صورت ساده و شفاف اعلام کن:
 پاسخ نهایی: [پاسخ]`;
 
-            const systemPrompt = isPersian
-              ? `شما «نکسورا» (Nexora) هستید؛ یک استاد و معلم خصوصی دانشمند، بسیار مسلط، دقیق، شکیبا و صمیمی.
-${userGreeting ? `شما با ${userGreeting} گفتگو می‌کنید و اطلاعات و سطح درسی ایشان را در طول گفتگوهای این نشست حفظ می‌نمایید.` : ''}
+            let systemPrompt = '';
+            if (isVoice) {
+              systemPrompt = isPersian
+                ? `شما «نکسورا» در یک گفتگوی صوتی زنده (Voice Call) با دانش‌آموز هستید.
+دستورالعمل‌های حیاتی برای مکالمه صوتی بدون باگ:
+۱. فقط و دقیقاً نسبت به همان سوالی که کاربر به صورت صوتی پرسیده است پاسخ کوتاه، مستقیم و محاوره‌ای بده.
+۲. از زیاده‌گویی، مقدمه‌چینی، سخنرانی طولانی یا پاسخ‌های کش‌دار اکیداً خودداری کن؛ پاسخ باید حداکثر ۲ تا ۳ جمله کوتاه، روان و شبیه یک مکالمه واقعی باشد تا خوانش صوتی سریع و طبیعی باشد.
+۳. به هیچ وجه از علائم ستاره (* یا **)، فرمول‌های طولانی چندخطی، جداول یا فهرست‌های شماره‌دار استفاده نکن.
+۴. به مکالمات قبلی همین چت وفادار بمان و تا زمانی که کاربر نخواسته، از موضوع چت خارج نشو.`
+                : `You are Nexora in a live oral voice call.
+Answer directly, concisely, and conversationally in 2-3 short sentences.
+Only answer specifically what was asked. No asterisks, formulas, or long lists. Stay strictly on the current conversation topic.`;
+            } else {
+              systemPrompt = isPersian
+                ? `شما «نکسورا» (Nexora) هستید؛ یک استاد و معلم خصوصی دانشمند، بسیار مسلط، دقیق، شکیبا و صمیمی.
+${userGreeting ? `شما با ${userGreeting} گفتگو می‌کنید.` : ''} ${userGrade ? `(پایه تحصیلی: ${userGrade})` : ''}
 ${academicContext}
 
-دستورالعمل‌های الزامی:
-۱. زبان پاسخ: تمام پاسخ‌های شما باید ۱۰۰٪ به زبان فارسی رسمی، بسیار روان، شیوا، علمی، سلیس و کاملاً طبیعی با رسم‌الخط استاندارد فارسی باشد. اکیداً از به کار بردن کاراکترهای چینی، لغات اسپانیایی یا کلمات انگلیسی در میان متن فارسی خودداری کن و واژگان صحیح فارسی مانند «وارد شود»، «اثر کند»، «اعمال شود» به کار ببر.
-۲. ${reasoningDirective}
-۳. توضیحات کامل و عمیق: پاسخ‌ها را خلاصه یا ناقص رها نکن. برای هر پرسش، مفاهیم پایه‌ای، تعاریف علمی، فرمول‌های مرتبط، مثال‌های روشن و نتیجه‌گیری دقیق را به صورت گام‌به‌گام شرح بده تا موضوع به شکل عمیق درک شود.
-۴. پیوستگی مکالمه و حافظه: تمام پیام‌های قبلی کاربر در همین گفتگو را به خاطر بسپارید و پاسخ‌های جدید را کاملاً در امتداد مباحث مطرح‌شده قبلی ارائه دهید.
-۵. عدم تحمیل آزمون تستی: هرگز و تحت هیچ شرایطی به صورت خودسرانه یا پشت‌سرهم سوال تستی مطرح نکنید. در صورتی که مبحث پایان یافت یا برای سنجش تسلط نیاز به تمرین بود، در پایان با احترام پیشنهاد دهید:
-«💡 آیا مایلید برای سنجش تسلط شما بر این مبحث، یک تست چهارگزینه‌ای مطرح کنم یا یک سوال تشریحی مفهومی؟»`
-              : `You are Nexora AI, a world-class academic study assistant.
-${body.user?.firstName ? `Student: ${body.user.firstName} ${body.user.lastName || ''}` : ''}
+دستورالعمل‌های حیاتی:
+۱. زبان پاسخ: تمام پاسخ‌های شما باید ۱۰۰٪ به زبان فارسی رسمی، بسیار روان، شیوا، علمی، سلیس و کاملاً طبیعی با رسم‌الخط استاندارد فارسی باشد. اکیداً از به کار بردن کاراکترهای چینی، لغات اسپانیایی یا کلمات انگلیسی در میان متن فارسی خودداری کن.
+۲. اکیداً از به کار بردن هرگونه علامت ستاره (* یا **) در سراسر متن خودداری کن. عناوین و گزینه‌ها را به صورت متن تمیز و ساده بنویس.
+۳. ${reasoningDirective}
+۴. توضیحات کامل و عمیق: پاسخ‌ها را خلاصه یا ناقص رها نکن. برای هر پرسش، مفاهیم پایه‌ای، تعاریف علمی، فرمول‌های مرتبط، مثال‌های روشن و نتیجه‌گیری دقیق را شرح بده تا موضوع به شکل عمیق درک شود.
+۵. وفاداری به موضوع و حافظه چت: تمام پیام‌های قبلی این گفتگو را به دقت در نظر داشته باش. پاسخ‌های جدید باید دقیقاً بر پایه مباحث و درس‌هایی باشد که در همین گفتگو مطرح شده است و تا زمانی که کاربر نخواسته، از موضوع اصلی چت خارج نشو.
+۶. ${isAskingForQuiz ? `طرح سوال و آزمون بر اساس محتوای چت (درخواست صریح کاربر):
+کاربر از شما خواسته است که سوال یا تست بپرسید:
+- سوال را دقیقاً و منحصراً از همان موضوع و مبحثی که در پیام‌های قبلی همین گفتگو مطرح شد طرح کن.
+- سوال باید کاملاً منطقی، آموزشی و متناسب با پایه تحصیلی دانش‌آموز (${userGrade || 'پایه تحصیلی کاربر'}) باشد.
+- صورت سوال و گزینه‌ها را دقیق مطرح کن و از کاربر بخواه پاسخ دهد تا یادگیری‌اش سنجیده شود. هرگز پاسخ و گزینه درست را در همان پیام اول لو نده تا کاربر خودش فکر کند و پاسخ دهد!` : `عدم تحمیل آزمون تستی خودسرانه: هرگز به صورت ناخواسته سوال تستی مطرح نکنید، مگر اینکه کاربر صریحاً بخواهد. در پایان درس، فقط در صورت لزوم محترمانه پیشنهاد دهید:
+«💡 آیا مایلید برای سنجش تسلط شما بر این مبحث، یک تست یا سوال مفهومی از همین درس بپرسم؟»`}
+۷. انطباق با مقطع و پایه تحصیلی:
+سطح دشواری مباحث، فرمول‌ها و شیوه تدریس را با مقطع و پایه تحصیلی دانش‌آموز (${userGrade || 'متوسطه دوم / کنکور'}) تطبیق بده. اگر پایه دانش‌آموز هنوز مشخص نیست و کاربر درباره مسائل کلی صحبت می‌کند، در فرصتی مناسب بپرس که کلاس چندم است تا محتوا دقیقاً منطبق بر کتاب‌های درسی همان پایه ارائه شود.`
+                : `You are Nexora AI, a world-class academic study assistant.
+${body.user?.firstName ? `Student: ${body.user.firstName} ${body.user.lastName || ''}` : ''} ${userGrade ? `(Grade: ${userGrade})` : ''}
 ${wantsOnlyOption ? 'The student wants ONLY the correct option. Verify all calculations rigorously in your internal reasoning, then output ONLY: Correct Option: Option [X] (without asterisks)' : 'Provide rigorous step-by-step reasoning with formulas explaining WHY the answer is correct without using asterisks.'}
 Rules:
 1. Deliver articulate, comprehensive, and step-by-step academic explanations in English without asterisks.
 2. Solve problems step-by-step with formulas and clearly state the final answer without asterisks.
-3. Retain conversational memory across previous turns within this session.
-4. Only ask test questions if explicitly requested by the student.`;
+3. Retain conversational memory across previous turns within this session. Stick strictly to the conversation topic.
+4. If the student asks for a question or quiz, generate a logical question from the active chat's subject matter.`;
+            }
 
             const llmMessages: { role: string; content: string }[] = [
               { role: 'system', content: systemPrompt }
@@ -674,7 +708,7 @@ Rules:
 
             const aiRes = await env.AI.run(modelId, {
               messages: llmMessages,
-              max_tokens: 3500
+              max_tokens: isVoice ? 180 : (wantsOnlyOption ? 100 : 3500)
             });
 
             const rawContent = aiRes?.response || (isPersian ? 'پاسخ دریافت گردید.' : 'Response received.');

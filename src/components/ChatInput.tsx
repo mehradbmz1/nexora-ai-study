@@ -157,13 +157,26 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
       recorder.start(200);
       setIsRecordingAudio(true);
+
+      // Auto-stop after 15s to ensure microphone never stays open inadvertently
+      if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
+      recordingTimeoutRef.current = setTimeout(() => {
+        stopVoiceRecording();
+      }, 15000);
     } catch (err) {
       console.warn('Microphone permission or hardware error:', err);
       setIsRecordingAudio(false);
     }
   };
 
+  const recordingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const stopVoiceRecording = () => {
+    if (recordingTimeoutRef.current) {
+      clearTimeout(recordingTimeoutRef.current);
+      recordingTimeoutRef.current = null;
+    }
+
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch {}
     }
@@ -172,6 +185,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       try { mediaRecorderRef.current.stop(); } catch {}
     } else {
       setIsRecordingAudio(false);
+    }
+
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
     }
   };
 
@@ -184,6 +201,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   };
 
   const handleSend = () => {
+    // Immediately terminate any active microphone stream
+    if (isRecordingAudio) {
+      stopVoiceRecording();
+    }
+
     const hasImages = attachedImages.length > 0;
     const isFa = !text.trim() || /[\u0600-\u06FF]/.test(text);
 

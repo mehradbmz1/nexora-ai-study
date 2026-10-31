@@ -52,6 +52,7 @@ export function App() {
     curriculum: 'iran',
     preferredLanguage: 'auto',
     selectedModelId: DEFAULT_AI_MODEL_ID,
+    gradeLevel: localStorage.getItem('nexora_grade_level') || 'دوازدهم / کنکور',
   });
 
   // Active chat calculation
@@ -225,13 +226,12 @@ export function App() {
         content: m.content,
       }));
 
-      const userContext = currentUser
-        ? {
-            firstName: currentUser.firstName,
-            lastName: currentUser.lastName,
-            email: currentUser.email,
-          }
-        : undefined;
+      const userContext = {
+        firstName: currentUser?.firstName,
+        lastName: currentUser?.lastName,
+        email: currentUser?.email,
+        gradeLevel: settings.gradeLevel || localStorage.getItem('nexora_grade_level') || 'دوازدهم / کنکور',
+      };
 
       const aiResponse = await ChatSyncService.sendToAI(
         text,

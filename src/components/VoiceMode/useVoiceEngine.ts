@@ -72,7 +72,7 @@ export function useVoiceEngine(
     };
   }, []);
 
-  // Speak assistant text using browser SpeechSynthesis
+  // Speak assistant text using browser SpeechSynthesis with strict echo cancellation
   const playAssistantSpeech = useCallback((text: string, onFinish?: () => void) => {
     if (typeof window === 'undefined' || !window.speechSynthesis) {
       if (onFinish) onFinish();
@@ -81,6 +81,23 @@ export function useVoiceEngine(
 
     window.speechSynthesis.cancel();
     isSpeakingRef.current = true;
+    setState('speaking');
+    setSpeaker('assistant');
+
+    // MUTE MICROPHONE HARDWARE INPUT TRACKS TO PREVENT ECHO LOOP
+    if (micStreamRef.current) {
+      micStreamRef.current.getAudioTracks().forEach(t => { t.enabled = false; });
+    }
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch {}
+    }
+    audioChunksRef.current = [];
+    hasSpokenInThisTurn.current = false;
+    latestTranscriptRef.current = '';
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
 
     // Clean text of markdown characters for cleaner speech
     const cleanText = text
@@ -119,15 +136,25 @@ export function useVoiceEngine(
       if (enVoice) utterance.voice = enVoice;
     }
 
-    utterance.onend = () => {
-      isSpeakingRef.current = false;
-      if (onFinish) onFinish();
+    const finishHandler = () => {
+      // 800ms cooldown delay to let room echo and speaker tail dissipate completely
+      setTimeout(() => {
+        isSpeakingRef.current = false;
+        audioChunksRef.current = [];
+        hasSpokenInThisTurn.current = false;
+        latestTranscriptRef.current = '';
+
+        // Re-enable microphone track only AFTER room is completely silent
+        if (micStreamRef.current) {
+          micStreamRef.current.getAudioTracks().forEach(t => { t.enabled = true; });
+        }
+
+        if (onFinish) onFinish();
+      }, 800);
     };
 
-    utterance.onerror = () => {
-      isSpeakingRef.current = false;
-      if (onFinish) onFinish();
-    };
+    utterance.onend = finishHandler;
+    utterance.onerror = finishHandler;
 
     window.speechSynthesis.speak(utterance);
   }, [persona]);
@@ -158,7 +185,7 @@ export function useVoiceEngine(
     setHistory(prev => [...prev, { role: 'user', text: userPrompt, time: now }]);
 
     try {
-      // 3. Call Cloudflare AI backend
+      // 3. Call Cloudflare AI backend with isVoiceMode = true for direct, conversational answers
       const historyPayload = history.map(h => ({ role: h.role, content: h.text }));
       historyPayload.push({ role: 'user', content: userPrompt });
 
@@ -167,7 +194,10 @@ export function useVoiceEngine(
         undefined,
         'iran',
         selectedModelId,
-        historyPayload
+        historyPayload,
+        undefined,
+        undefined,
+        true // isVoiceMode = true!
       );
 
       const replyText = aiResponse.content || (isFa ? 'پاسخ هوش مصنوعی دریافت شد.' : 'AI response received.');
@@ -204,7 +234,8 @@ export function useVoiceEngine(
     audioChunksRef.current = [];
     hasSpokenInThisTurn.current = false;
 
-    if (blob.size < 1200) return;
+    // Filter out tiny audio artifacts / clicks (< 3500 bytes)
+    if (blob.size < 3500) return;
 
     setState('thinking');
     setCurrentTranscript('در حال تبدیل گفتار شما با Whisper هوش مصنوعی...');
@@ -286,24 +317,45 @@ export function useVoiceEngine(
     } catch {}
   }, [isMuted, submitSpeechToAI]);
 
-  // Initialize Microphone, MediaRecorder & Audio Analysis
+  // Initialize Microphone with Full Hardware Noise Suppression, Echo Cancellation, and Dual-Filter Audio Processing
   const initAudioStream = useCallback(async () => {
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1,
+            sampleRate: 48000,
+          }
+        });
         micStreamRef.current = stream;
 
         const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
         const ctx = new AudioCtx();
         audioContextRef.current = ctx;
 
+        // Software DSP Filter Pipeline:
+        // 1. Highpass filter to eliminate low-frequency rumbles (fan, AC, handling noise) < 95Hz
+        const highpass = ctx.createBiquadFilter();
+        highpass.type = 'highpass';
+        highpass.frequency.value = 95;
+
+        // 2. Lowpass filter to cut out high-frequency hiss / static > 7000Hz
+        const lowpass = ctx.createBiquadFilter();
+        lowpass.type = 'lowpass';
+        lowpass.frequency.value = 7000;
+
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 64;
-        analyser.smoothingTimeConstant = 0.8;
+        analyser.smoothingTimeConstant = 0.85;
         analyserRef.current = analyser;
 
         const source = ctx.createMediaStreamSource(stream);
-        source.connect(analyser);
+        source.connect(highpass);
+        highpass.connect(lowpass);
+        lowpass.connect(analyser);
 
         // Start MediaRecorder for hardware audio capture
         try {
@@ -366,16 +418,23 @@ export function useVoiceEngine(
         setAudioLevel(level);
         setFrequencyData(slicedFreq);
 
-        // Voice activity detection
-        if (level > 0.12 && !isSpeakingRef.current) {
+        // Dynamic Voice Activity Detection:
+        // Prioritizes closer, louder speech (level >= 0.22) and rejects background room hum (< 0.10)
+        const SPEECH_ACTIVE_THRESHOLD = 0.22;
+        const SILENCE_THRESHOLD = 0.10;
+
+        if (level >= SPEECH_ACTIVE_THRESHOLD && !isSpeakingRef.current) {
           hasSpokenInThisTurn.current = true;
-          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-        } else if (hasSpokenInThisTurn.current && level <= 0.08 && !isSpeakingRef.current) {
-          // User finished speaking, wait 1.3s for pause then submit
+          if (silenceTimerRef.current) {
+            clearTimeout(silenceTimerRef.current);
+            silenceTimerRef.current = null;
+          }
+        } else if (hasSpokenInThisTurn.current && level < SILENCE_THRESHOLD && !isSpeakingRef.current) {
+          // User paused speaking; wait 1.5s then submit to ensure sentence completion
           if (!silenceTimerRef.current) {
             silenceTimerRef.current = setTimeout(() => {
               silenceTimerRef.current = null;
-              if (latestTranscriptRef.current && latestTranscriptRef.current.trim()) {
+              if (latestTranscriptRef.current && latestTranscriptRef.current.trim().length > 1) {
                 const toSubmit = latestTranscriptRef.current;
                 latestTranscriptRef.current = '';
                 submitSpeechToAI(toSubmit);
@@ -383,7 +442,7 @@ export function useVoiceEngine(
                 // If Web Speech didn't catch it, fallback to Cloudflare Whisper!
                 processRecordedAudioWithWhisper();
               }
-            }, 1300);
+            }, 1500);
           }
         }
       } else {
@@ -432,6 +491,13 @@ export function useVoiceEngine(
     isSpeakingRef.current = false;
     audioChunksRef.current = [];
     hasSpokenInThisTurn.current = false;
+    latestTranscriptRef.current = '';
+
+    // Re-enable hardware mic tracks
+    if (micStreamRef.current) {
+      micStreamRef.current.getAudioTracks().forEach(t => { t.enabled = true; });
+    }
+
     setState('listening');
     setSpeaker('user');
     setCurrentTranscript('صحبت متوقف شد. در حال شنیدن صدای شما...');

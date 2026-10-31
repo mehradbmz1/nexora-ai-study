@@ -127,6 +127,7 @@ export interface User {
   firstName: string;
   lastName: string;
   email: string;
+  gradeLevel?: string;
   createdAt: string;
 }
 
@@ -148,4 +149,5 @@ export interface AppSettings {
   curriculum: EducationalCurriculum;
   preferredLanguage: 'auto' | 'fa' | 'en';
   selectedModelId: string;
+  gradeLevel?: string;
 }
