@@ -515,100 +515,85 @@ function normalizeModelId(modelId?: string): string {
 
               for (let i = 0; i < allImages.length; i++) {
                 const imgData = allImages[i];
-                const base64Part = imgData.includes(',') ? imgData.split(',')[1] : imgData;
-                const cleanBase64 = base64Part.trim().replace(/\s/g, '');
-                const binaryString = atob(cleanBase64);
-                const bytes = new Uint8Array(binaryString.length);
-                for (let j = 0; j < binaryString.length; j++) {
-                  bytes[j] = binaryString.charCodeAt(j);
+                let bytes: number[] = [];
+                try {
+                  const base64Part = imgData.includes(',') ? imgData.split(',')[1] : imgData;
+                  const cleanBase64 = base64Part.trim().replace(/[\r\n\s]/g, '').replace(/-/g, '+').replace(/_/g, '/');
+                  const padLen = (4 - (cleanBase64.length % 4)) % 4;
+                  const padded = cleanBase64 + '='.repeat(padLen);
+                  const binaryString = atob(padded);
+                  bytes = new Array<number>(binaryString.length);
+                  for (let j = 0; j < binaryString.length; j++) {
+                    bytes[j] = binaryString.charCodeAt(j);
+                  }
+                } catch (e) {
+                  console.error('Base64 decode error:', e);
+                  continue;
                 }
 
-                // Stage 1: High-precision Vision OCR Transcription using Llama 3.2 11B Vision
-                const ocrPrompt = `You are a high-precision document OCR and academic problem transcription engine.
-Examine this image with extreme care and extract all details verbatim:
-1. Exact transcription of every problem, question statement, numbers, units, variables, and formulas. If in Persian/Farsi, transcribe the Persian text exactly.
-2. Exact transcription of all multiple-choice options (1, 2, 3, 4 or الف، ب، ج، د) and their values.
-3. Description and labels of any diagrams, charts, circuits, or geometric shapes.
-4. If the question asked is not present in the image or the image is illegible, clearly note: "QUESTION_NOT_FOUND".
-Do NOT invent or hallucinate any questions not visible in the image.`;
+                if (bytes.length === 0) continue;
 
-                const visionRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
-                  prompt: ocrPrompt,
-                  image: Array.from(bytes),
-                  max_tokens: 2500,
-                });
+                // High-precision direct Persian solving prompt for Meta Llama 3.2 11B Vision
+                const directVisionPrompt = isPersian
+                  ? `شما «نکسورا» هستید؛ استاد و راهنمای برجسته حل تمرین و تدریس دروس.
+این تصویر را با بالاترین دقت بررسی کن و تمامی مسائل و سوالات موجود در آن را ۱۰۰٪ به زبان فارسی رسمی و روان حل کن:
+۱. صورت کامل سوالات، مقادیر، اعداد و گزینه‌ها را بخوان.
+۲. تمام محاسبات، فرمول‌ها و مراحل استدلال علمی را گام‌به‌گام و دقیق به فارسی تشریح کن.
+۳. در پایان هر سوال، گزینه صحیح یا پاسخ نهایی را به صورت مشخص بنویس:
+پاسخ نهایی: [پاسخ یا گزینه صحیح]
+۴. اگر تصویر فقط یک عکس، نمودار یا شیء است، تمام جزئیات آن را به فارسی دقیق توضیح بده.
+۵. اکیداً از علامت ستاره (*) استفاده نکن.
+${prompt ? `درخواست ویژه دانش‌آموز: ${prompt}` : ''}`
+                  : `You are Nexora AI, an expert academic problem-solving tutor.
+Analyze this image carefully. Transcribe all problems and multiple-choice options.
+Solve each question step-by-step with formulas and calculations, stating the final answer clearly.
+Do NOT use asterisks (*).
+${prompt ? `User request: ${prompt}` : ''}`;
 
-                const transcribed = (visionRes as any)?.response || '';
-                ocrResults.push(allImages.length > 1 ? `[تصویر ${i + 1}]:\n${transcribed}` : transcribed);
+                let transcribed = '';
+                try {
+                  const visionRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
+                    prompt: directVisionPrompt,
+                    image: bytes,
+                    max_tokens: 1500,
+                  });
+                  transcribed = (visionRes as any)?.response || '';
+                } catch (err: any) {
+                  console.warn('Vision primary model error:', err);
+                  transcribed = isPersian
+                    ? 'تصویر با موفقیت دریافت شد. در حال حاضر تصویر قابل پردازش نبود، لطفاً عکس واضح‌تر و مستقیم‌تری از سوال ارسال فرمایید.'
+                    : 'The image could not be processed. Please provide a clearer image.';
+                }
+
+                if (transcribed) {
+                  ocrResults.push(allImages.length > 1 ? `[تصویر ${i + 1}]:\n${transcribed}` : transcribed);
+                }
               }
 
-              const combinedOcr = ocrResults.join('\n\n---\n\n');
+              let combinedResult = ocrResults.join('\n\n---\n\n');
 
-              // Stage 2: Flagship Deep Reasoning and Persian Pedagogical Solution with Meta Llama 3.3 70B
-              const systemVision = isPersian
-                ? `شما «نکسورا» (Nexora) هستید؛ استاد و مدرس برجسته کنکور، امتحانات نهایی و حل مسائل درسی.
-وظیفه شما حل کامل، گام‌به‌گام، مستدل و دقیق تمامی سوالات استخراج‌شده از تصویر ارسالی دانش‌آموز است.
+              if (!combinedResult.trim()) {
+                combinedResult = isPersian
+                  ? 'تصویری برای پردازش بازخوانی نشد. لطفاً مجدداً عکس خود را ارسال کنید.'
+                  : 'No content could be extracted from the image. Please re-upload.';
+              }
 
-دستورالعمل‌های حیاتی برای حل کامل، دقیق و بدون توهم (ضدباگ):
-۱. قانون صداقت دیداری (عدم توهم): اگر کاربر درباره سوال، موضوع، فرمول یا مطلبی پرسید که در تصویر وجود ندارد، یا تصویر ناخواناست، صریحاً، قاطعانه و بدون هیچ حدس زدنی بگو:
-«من چیزی در این باره در تصویر نمی‌بینم.»
-اکیداً از پیش‌بینی خیالی، حدس زدن یا پاسخ به سوالاتی که در عکس وجود ندارند خودداری کن.
-۲. اکیداً از علامت ستاره (* یا **) در سراسر پاسخ خودداری کن. هیچ ستاره‌ای نباید در متن ظاهر شود.
-۳. حل کامل و دونه‌به‌دونه: تمام سوالاتی که واقعاً در تصویر وجود دارند را به صورت جداگانه (سوال ۱:، سوال ۲: و...) شماره‌گذاری کن.
-۴. صورت کامل هر سوال موجود در عکس، مقادیر داده‌شده و گزینه‌ها را دقیق بنویس.
-۵. حل تشریحی و عمیق: محاسبات را با فرمول‌های علمی، محاسبات دقیق و استدلال مستحکم به فارسی سلیس و روان شرح بده. علت درستی گزینه صحیح و دلیل رد سایر گزینه‌ها را با اثبات علمی تشریح کن.
-۶. پاسخ نهایی: در پایان هر سوال، بدون ستاره بنویس:
-پاسخ نهایی: [پاسخ یا گزینه صحیح]`
-                : `You are Nexora AI, a premier academic problem-solving tutor.
-Solve each problem from the image transcription step-by-step with formulas, calculations, and clear proofs.
-If the requested question or topic is NOT visible in the image, strictly respond: "I cannot see anything about this in the image."
-Do NOT use asterisks (* or **) in your output.
-State the final answer clearly without asterisks.`;
+              // If user specifically asked for "فقط گزینه", run a fast 70B distillation
+              if (wantsOnlyOption && combinedResult.length > 20) {
+                try {
+                  const solverRes = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+                    messages: [
+                      { role: 'system', content: 'بر اساس این متن و حل مسئله، فقط شماره گزینه صحیح را بدون هیچ توضیح اضافی و بدون ستاره بنویس: گزینه صحیح: گزینه [شماره]' },
+                      { role: 'user', content: combinedResult }
+                    ],
+                    max_tokens: 60,
+                  });
+                  const opt = (solverRes as any)?.response;
+                  if (opt && opt.trim()) combinedResult = opt.trim();
+                } catch {}
+              }
 
-              const userVision = wantsOnlyOption
-                ? (isPersian
-                    ? `کاربر صریحاً خواسته است که «فقط گزینه» مشخص شود.
-بر اساس متن و اطلاعات بازخوانی‌شده از روی تصویر:
-"""
-${combinedOcr}
-"""
-اگر سوال یا گزینه‌ها در تصویر موجود نیستند، بگو: «من چیزی در این باره در تصویر نمی‌بینم.»
-در غیر این صورت، تمام محاسبات و گزینه‌ها را در ذهن خود با دقت صددرصد بازبینی کن تا هیچ باگی رخ ندهد. سپس بدون ستاره و بدون هیچ توضیح اضافه، فقط گزینه صحیح را اعلام کن:
-گزینه صحیح: گزینه [شماره گزینه]`
-                    : `Based on this transcribed image:
-"""
-${combinedOcr}
-"""
-If not found in the image, say: "I cannot see anything about this in the image."
-Otherwise, output ONLY without asterisks:
-Correct Option: Option [X]`)
-                : (isPersian
-                    ? `محتوای استخراج‌شده از تصویر ارسالی:
-"""
-${combinedOcr}
-"""
-${academicContext}
-${prompt && !prompt.includes('لطفاً') ? `درخواست ویژه دانش‌آموز: ${prompt}` : ''}
-اگر مطلب یا سوالی که کاربر خواسته در تصویر موجود نیست، فقط و فقط بگو: «من چیزی در این باره در تصویر نمی‌بینم.»
-در غیر این صورت، تمام سوالات این تصویر را به صورت دونه‌به‌دونه، کامل، تشریحی و با فرمول‌ها و محاسبات دقیق حل کن و در پایان هر سوال، گزینه صحیح را مشخص نما. به هیچ وجه از ستاره استفاده نکن.`
-                    : `Here is the transcribed content from the image:
-"""
-${combinedOcr}
-"""
-User prompt: ${prompt || 'Solve all problems step-by-step with complete formulas.'}
-If not visible in the image, say: "I cannot see anything about this in the image."
-Otherwise, solve each question in detail without asterisks.`);
-
-              const solverRes = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
-                messages: [
-                  { role: 'system', content: systemVision },
-                  { role: 'user', content: userVision }
-                ],
-                max_tokens: wantsOnlyOption ? 100 : 3500,
-              });
-
-              const rawFinal = (solverRes as any)?.response || combinedOcr || (isPersian ? 'تصویر با موفقیت بازخوانی و حل شد.' : 'Image solved successfully.');
-              const content = sanitizeAiResponse(rawFinal, isPersian);
+              const content = sanitizeAiResponse(combinedResult, isPersian);
 
               const citations = academicSources.length > 0
                 ? academicSources.map(s => ({

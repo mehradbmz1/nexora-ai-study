@@ -273,18 +273,14 @@ export function useVoiceEngine(
       rec.onresult = (event: any) => {
         if (isSpeakingRef.current) return;
 
-        let interim = '';
-        let final = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            final += event.results[i][0].transcript;
-          } else {
-            interim += event.results[i][0].transcript;
-          }
+        let fullTranscript = '';
+        for (let i = 0; i < event.results.length; ++i) {
+          fullTranscript += event.results[i][0].transcript;
         }
 
-        const text = (final || interim).trim();
+        const text = fullTranscript.trim();
         if (text) {
+          hasSpokenInThisTurn.current = true;
           latestTranscriptRef.current = text;
           setCurrentTranscript(text);
           setSpeaker('user');
@@ -296,7 +292,7 @@ export function useVoiceEngine(
               latestTranscriptRef.current = '';
               submitSpeechToAI(toSubmit);
             }
-          }, 1400);
+          }, 1300);
         }
       };
 
@@ -414,14 +410,14 @@ export function useVoiceEngine(
           slicedFreq.push(val);
         }
         const avg = sum / (16 * 255);
-        const level = Math.min(1.0, avg * 2.2);
+        const level = Math.min(1.0, avg * 3.5);
         setAudioLevel(level);
         setFrequencyData(slicedFreq);
 
         // Dynamic Voice Activity Detection:
-        // Prioritizes closer, louder speech (level >= 0.22) and rejects background room hum (< 0.10)
-        const SPEECH_ACTIVE_THRESHOLD = 0.22;
-        const SILENCE_THRESHOLD = 0.10;
+        // Sensitive to natural human voice (>= 0.08) while rejecting ambient room silence (< 0.04)
+        const SPEECH_ACTIVE_THRESHOLD = 0.08;
+        const SILENCE_THRESHOLD = 0.04;
 
         if (level >= SPEECH_ACTIVE_THRESHOLD && !isSpeakingRef.current) {
           hasSpokenInThisTurn.current = true;
@@ -430,7 +426,7 @@ export function useVoiceEngine(
             silenceTimerRef.current = null;
           }
         } else if (hasSpokenInThisTurn.current && level < SILENCE_THRESHOLD && !isSpeakingRef.current) {
-          // User paused speaking; wait 1.5s then submit to ensure sentence completion
+          // User paused speaking; wait 1.3s then submit
           if (!silenceTimerRef.current) {
             silenceTimerRef.current = setTimeout(() => {
               silenceTimerRef.current = null;
@@ -442,7 +438,7 @@ export function useVoiceEngine(
                 // If Web Speech didn't catch it, fallback to Cloudflare Whisper!
                 processRecordedAudioWithWhisper();
               }
-            }, 1500);
+            }, 1300);
           }
         }
       } else {

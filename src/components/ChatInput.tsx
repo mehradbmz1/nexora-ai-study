@@ -40,6 +40,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const recognitionRef = useRef<any>(null);
   const receivedTextFromWebSpeech = useRef<boolean>(false);
+  const baseTextRef = useRef<string>('');
+  const recordingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Auto-resize textarea height
   useEffect(() => {
@@ -65,6 +67,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, []);
 
   const startVoiceRecording = async () => {
+    baseTextRef.current = text.trim();
     receivedTextFromWebSpeech.current = false;
     audioChunksRef.current = [];
 
@@ -82,12 +85,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           for (let i = 0; i < event.results.length; ++i) {
             transcript += event.results[i][0].transcript;
           }
-          if (transcript.trim()) {
+          const spoken = transcript.trim();
+          if (spoken) {
             receivedTextFromWebSpeech.current = true;
-            setText(prev => {
-              const base = prev.trim();
-              return base ? base + ' ' + transcript.trim() : transcript.trim();
-            });
+            const base = baseTextRef.current;
+            setText(base ? `${base} ${spoken}` : spoken);
           }
         };
 
@@ -142,10 +144,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           try {
             const res = await ChatSyncService.transcribeAudio(audioBlob);
             if (res.success && res.text) {
-              setText(prev => {
-                const base = prev.trim();
-                return base ? base + ' ' + res.text!.trim() : res.text!.trim();
-              });
+              const spoken = res.text.trim();
+              if (spoken) {
+                const base = baseTextRef.current;
+                setText(base ? `${base} ${spoken}` : spoken);
+              }
             }
           } catch (err) {
             console.error('Whisper transcribe error:', err);
@@ -158,18 +161,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       recorder.start(200);
       setIsRecordingAudio(true);
 
-      // Auto-stop after 15s to ensure microphone never stays open inadvertently
+      // Auto-stop after 20s to ensure microphone never stays open inadvertently
       if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
       recordingTimeoutRef.current = setTimeout(() => {
         stopVoiceRecording();
-      }, 15000);
+      }, 20000);
     } catch (err) {
       console.warn('Microphone permission or hardware error:', err);
       setIsRecordingAudio(false);
     }
   };
-
-  const recordingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const stopVoiceRecording = () => {
     if (recordingTimeoutRef.current) {
@@ -256,7 +257,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         }
         const img = new Image();
         img.onload = () => {
-          const maxDim = 1600;
+          const maxDim = 1024;
           let { width, height } = img;
           if (width > maxDim || height > maxDim) {
             if (width > height) {
@@ -278,7 +279,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           ctx.fillStyle = '#FFFFFF';
           ctx.fillRect(0, 0, width, height);
           ctx.drawImage(img, 0, 0, width, height);
-          const compressed = canvas.toDataURL('image/jpeg', 0.90);
+          const compressed = canvas.toDataURL('image/jpeg', 0.82);
           resolve(compressed);
         };
         img.onerror = () => resolve(dataUrl);
