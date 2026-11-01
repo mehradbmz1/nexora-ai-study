@@ -161,11 +161,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     utterance.lang = isPersian ? 'fa-IR' : 'en-US';
 
     const voices = window.speechSynthesis.getVoices();
+    let selectedVoice: SpeechSynthesisVoice | undefined;
     if (isPersian) {
-      const faVoice = voices.find(v => v.lang.startsWith('fa') || v.name.includes('Persian') || v.name.includes('فارسی'));
-      if (faVoice) utterance.voice = faVoice;
+      selectedVoice = voices.find(v => v.lang.startsWith('fa') || v.name.includes('Persian') || v.name.includes('فارسی') || v.lang.includes('IR'));
+      if (!selectedVoice) {
+        setSpeakingMsgId(null);
+        return;
+      }
+      utterance.voice = selectedVoice;
     } else {
-      const enVoice = voices.find(v => v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Samantha') || v.name.includes('Daniel')));
+      const enVoice = voices.find(v => v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Samantha') || v.name.includes('Daniel') || v.name.includes('Google')));
       if (enVoice) utterance.voice = enVoice;
     }
 

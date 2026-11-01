@@ -128,12 +128,19 @@ export function useVoiceEngine(
     }
 
     const voices = window.speechSynthesis.getVoices();
+    let selectedVoice: SpeechSynthesisVoice | undefined;
     if (isPersian) {
-      const faVoice = voices.find(v => v.lang.startsWith('fa') || v.name.toLowerCase().includes('persian') || v.name.includes('فارسی'));
-      if (faVoice) utterance.voice = faVoice;
+      selectedVoice = voices.find(v =>
+        v.lang.startsWith('fa') ||
+        v.name.toLowerCase().includes('persian') ||
+        v.name.includes('فارسی') ||
+        v.lang.includes('IR')
+      );
     } else {
-      const enVoice = voices.find(v => v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Samantha') || v.name.includes('Google') || v.name.includes('Daniel')));
-      if (enVoice) utterance.voice = enVoice;
+      selectedVoice = voices.find(v =>
+        v.lang.startsWith('en') &&
+        (v.name.includes('Natural') || v.name.includes('Samantha') || v.name.includes('Google') || v.name.includes('Daniel') || v.name.includes('Zira') || v.name.includes('David'))
+      );
     }
 
     const finishHandler = () => {
@@ -152,6 +159,21 @@ export function useVoiceEngine(
         if (onFinish) onFinish();
       }, 800);
     };
+
+    // CRITICAL ANTI-BUZZ FIX: If Persian text but OS has no Persian voice pack,
+    // do NOT let English David/Zira screech on Persian characters!
+    if (isPersian && !selectedVoice) {
+      console.info('No Persian TTS voice in browser. Displaying spoken response cleanly.');
+      const simulatedDuration = Math.min(5000, Math.max(2500, cleanText.length * 60));
+      setTimeout(() => {
+        finishHandler();
+      }, simulatedDuration);
+      return;
+    }
+
+    if (selectedVoice) {
+      utterance.voice = selectedVoice;
+    }
 
     utterance.onend = finishHandler;
     utterance.onerror = finishHandler;

@@ -9,7 +9,6 @@ import {
   LogIn,
   ChevronDown,
   Cpu,
-  GraduationCap,
 } from 'lucide-react';
 import type { SubjectId, User } from '../types';
 import { getAiModelById } from '../data/aiModels';
@@ -84,16 +83,6 @@ export const Navbar: React.FC<NavbarProps> = ({
             {currentModel.name.replace('Meta ', '').replace(' Instruct', '')}
           </span>
           <ChevronDown className="w-3 h-3 text-neutral-400 group-hover:text-neutral-600 dark:group-hover:text-neutral-200 transition-transform" />
-        </button>
-
-        {/* Grade Level Badge */}
-        <button
-          onClick={onOpenSettings}
-          className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-violet-500/10 dark:bg-violet-950/40 hover:bg-violet-500/20 border border-violet-500/30 text-violet-700 dark:text-violet-300 text-xs font-semibold transition-all shadow-xs cursor-pointer"
-          title="مقطع و پایه تحصیلی (تنظیمات)"
-        >
-          <GraduationCap className="w-3.5 h-3.5 text-violet-500" />
-          <span>{localStorage.getItem('nexora_grade_level') || 'دوازدهم / کنکور'}</span>
         </button>
       </div>
 

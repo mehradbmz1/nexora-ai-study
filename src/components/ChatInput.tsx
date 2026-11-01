@@ -214,12 +214,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (hasImages) {
       if (attachedImages.length > 1) {
         defaultPrompt = isFa
-          ? 'لطفاً تمامی سوالات و مسائل موجود در این تصاویر را به صورت دونه‌به‌دونه، گام‌به‌گام و با محاسبات دقیق و فرمول‌ها به زبان فارسی حل کن و در انتهای هر سوال، گزینه صحیح یا پاسخ نهایی را به صورت برجسته مشخص نما.'
-          : 'Please transcribe and solve all problems in these images step-by-step with formulas, answering each question one-by-one with clearly stated final answers.';
+          ? 'لطفاً این تصاویر را با دقت بررسی کن. اگر حاوی سوال یا مسئله درسی هستند، آنها را با فرمول و محاسبات دقیق حل کن؛ اما اگر سوال درسی نیستند، صریحاً اعلام کن که این تصاویر سوال درسی نیستند و فقط محتوای آنها را تشریح کن (هرگز خودسرانه سوال طرح نکن).'
+          : 'Please analyze these images. If they contain academic problems, solve them step-by-step. If not, state clearly that they are not study questions and describe the images without inventing questions.';
       } else {
         defaultPrompt = isFa
-          ? 'لطفاً مسئله و سوال موجود در این تصویر را به طور کامل، گام‌به‌گام و با ذکر محاسبات دقیق به زبان فارسی حل کن و در پایان پاسخ نهایی یا گزینه صحیح را صریحاً مشخص نما.'
-          : 'Please transcribe and solve the academic problem shown in this image step-by-step with formulas and state the final answer clearly.';
+          ? 'لطفاً این تصویر را با دقت بررسی کن. اگر این تصویر حاوی سوال یا مسئله درسی است، آن را با فرمول و محاسبات دقیق حل کن؛ اما اگر سوال درسی نیست، صریحاً اعلام کن که این تصویر سوال درسی نیست و فقط محتوای آن را تشریح کن (هرگز خودسرانه سوال طرح نکن).'
+          : 'Please analyze this image. If it contains an academic problem, solve it step-by-step. If not, state clearly that it is not a study question and describe the image without inventing questions.';
       }
     }
 
@@ -245,7 +245,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   };
 
-  // High-fidelity image optimization (compresses large camera photos to crisp 1600px JPEG to prevent upload bugs)
+  // High-fidelity image optimization (enhances blurry photos, cleans text, and scales safely)
   const optimizeImage = (file: File): Promise<string> => {
     return new Promise((resolve) => {
       const reader = new FileReader();
@@ -276,6 +276,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             resolve(dataUrl);
             return;
           }
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
           ctx.fillStyle = '#FFFFFF';
           ctx.fillRect(0, 0, width, height);
           ctx.drawImage(img, 0, 0, width, height);
