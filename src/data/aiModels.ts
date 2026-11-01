@@ -2,6 +2,38 @@ import type { CloudflareAiModel } from '../types';
 
 export const CLOUDFLARE_FREE_AI_MODELS: CloudflareAiModel[] = [
   {
+    id: 'gemini-2.5-flash',
+    name: 'Google Gemini 2.5 Flash',
+    provider: 'Google',
+    category: 'flagship',
+    badgeFa: '⚡ جمینای ۲.۵ فلش (ویژن و حل مسئله)',
+    badgeEn: 'Gemini 2.5 Flash Vision & STEM',
+    descriptionFa: 'موتور ارتقایافته حل مسائل کنکور و المپیاد، خوانش کریستالی تصاویر، نمودارهای فیزیک، ساختارهای آلی شیمی و درک عمیق محاسبات ریاضی به فارسی.',
+    descriptionEn: 'Ultra-fast multimodal reasoning engine by Google DeepMind. Excels at OCR, chemistry bonds, complex physics and Olympiad STEM.',
+    contextWindow: '1M',
+    supportsVision: true,
+    languages: ['فارسی', 'English', 'العربية', 'Français', 'Deutsch', 'Español'],
+    isFree: true,
+    accentColor: '#3b82f6',
+    recommendedFor: 'حل فوق‌سریع و دقیق مسائل تستی و تشریحی، خوانش تصاویر کم‌کیفیت و نمودارها',
+  },
+  {
+    id: 'gemini-2.5-pro',
+    name: 'Google Gemini 2.5 Pro (Olympiad)',
+    provider: 'Google',
+    category: 'reasoning',
+    badgeFa: '🧠 جمینای ۲.۵ پرو (استدلال المپیادی)',
+    badgeEn: 'Gemini 2.5 Pro Olympiad',
+    descriptionFa: 'بالاترین قدرت استدلال علمی جهان برای دشوارترین سوالات کنکور، المپیاد شیمی و فیزیک، و قضایای پیشرفته ریاضی با استدلال گام‌به‌گام.',
+    descriptionEn: 'Google flagship reasoning model for toughest academic benchmarks, deep Olympiad physics, organic chemistry and calculus.',
+    contextWindow: '2M',
+    supportsVision: true,
+    languages: ['فارسی', 'English', 'العربية', 'Français', 'Deutsch'],
+    isFree: true,
+    accentColor: '#8b5cf6',
+    recommendedFor: 'مسائل المپیاد، کنکورهای دشوار، تحلیل‌های عمیق شیمی و فیزیک',
+  },
+  {
     id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
     name: 'Meta Llama 3.3 70B Instruct',
     provider: 'Meta',
@@ -195,7 +227,7 @@ export const CLOUDFLARE_FREE_AI_MODELS: CloudflareAiModel[] = [
   },
 ];
 
-export const DEFAULT_AI_MODEL_ID = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+export const DEFAULT_AI_MODEL_ID = 'gemini-2.5-flash';
 
 export function getAiModelById(id: string): CloudflareAiModel {
   return (

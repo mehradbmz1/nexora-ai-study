@@ -38,8 +38,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [cfEmail, setCfEmail] = useState('');
   const [cfAccountId, setCfAccountId] = useState('');
   const [cfSaved, setCfSaved] = useState(false);
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('nexora_gemini_api_key') || '');
+  const [geminiSaved, setGeminiSaved] = useState(false);
 
   if (!isOpen) return null;
+
+  const handleSaveGeminiKey = () => {
+    if (geminiKey.trim()) {
+      localStorage.setItem('nexora_gemini_api_key', geminiKey.trim());
+    } else {
+      localStorage.removeItem('nexora_gemini_api_key');
+    }
+    setGeminiSaved(true);
+    setTimeout(() => setGeminiSaved(false), 2000);
+  };
 
   const handleSaveCloudflareAI = async () => {
     try {
@@ -143,6 +155,49 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </>
                 ) : (
                   <span>Update Cloudflare</span>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Google Gemini 2.5 Engine & Key */}
+          <div className="p-4 rounded-2xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-800/60 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <span className="text-xs font-bold text-blue-900 dark:text-blue-200">
+                  Google Gemini 2.5 Flash & Pro (ویژن و استدلال المپیادی)
+                </span>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-200/60 dark:bg-blue-800/60 text-blue-800 dark:text-blue-200 font-semibold">
+                Multimodal STEM
+              </span>
+            </div>
+
+            <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
+              کلید API اختصاصی Google AI Studio خود را برای فعال‌سازی نامحدود Gemini 2.5 وارد کنید (اختیاری):
+            </p>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                value={geminiKey}
+                onChange={e => setGeminiKey(e.target.value)}
+                placeholder="AIzaSy..."
+                className="flex-1 px-3 py-1.5 rounded-xl bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 text-xs text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+              />
+              <button
+                type="button"
+                onClick={handleSaveGeminiKey}
+                className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-sm flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+              >
+                {geminiSaved ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>ذخیره شد!</span>
+                  </>
+                ) : (
+                  <span>ذخیره کلید</span>
                 )}
               </button>
             </div>

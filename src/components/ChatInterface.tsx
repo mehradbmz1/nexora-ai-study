@@ -20,81 +20,8 @@ import {
   FileText,
 } from 'lucide-react';
 import type { ChatMessage } from '../types';
+import { MathRenderer } from './MathRenderer';
 
-// Sleek text renderer that eradicates annoying asterisks (*, **) and renders prominent badges for answers and questions
-const FormattedMessage: React.FC<{ content: string; isPersian: boolean }> = ({ content }) => {
-  if (!content) return null;
-
-  // 1. Completely strip all annoying asterisks and convert escaped multiplication to ×
-  const cleaned = content
-    .replace(/\\\*/g, '×')
-    .replace(/\*{2,}/g, '')
-    .replace(/(^|\n)\s*\*\s+/g, '$1• ')
-    .replace(/\*/g, '');
-
-  const paragraphs = cleaned.split(/\n{2,}/);
-
-  return (
-    <div className="text-sm sm:text-base leading-relaxed font-normal space-y-3">
-      {paragraphs.map((p, pIdx) => {
-        const trimmed = p.trim();
-        if (!trimmed) return null;
-
-        // Final answer or option highlight badge
-        const isFinalAnswer = /^(پاسخ نهایی|گزینه صحیح|پاسخ صحیح|Correct Option|Final Answer|پاسخ قطعی)[:：]/i.test(trimmed);
-        if (isFinalAnswer) {
-          return (
-            <div
-              key={pIdx}
-              className="my-3 p-3.5 sm:p-4 rounded-2xl bg-emerald-500/10 dark:bg-emerald-500/15 border border-emerald-500/30 dark:border-emerald-500/40 text-emerald-950 dark:text-emerald-100 font-semibold shadow-xs flex items-start gap-2.5 animate-in fade-in"
-            >
-              <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-              <div className="flex-1 text-sm sm:text-base leading-relaxed">
-                {trimmed}
-              </div>
-            </div>
-          );
-        }
-
-        // Question header badge (e.g. "سوال ۱:", "سوال ۲:")
-        const isQuestionHeader = /^(سوال\s*\d+|مسئله\s*\d+|Question\s*\d+)[:：]/i.test(trimmed);
-        if (isQuestionHeader) {
-          return (
-            <div
-              key={pIdx}
-              className="mt-4 mb-2 p-2.5 rounded-xl bg-violet-500/10 dark:bg-violet-500/15 border border-violet-500/25 text-violet-950 dark:text-violet-200 font-bold text-sm sm:text-base"
-            >
-              {trimmed}
-            </div>
-          );
-        }
-
-        // Regular paragraph with potential bullets
-        const lines = trimmed.split('\n');
-        return (
-          <div key={pIdx} className="space-y-1">
-            {lines.map((line, lIdx) => {
-              const lTrim = line.trim();
-              if (lTrim.startsWith('• ') || lTrim.startsWith('- ')) {
-                return (
-                  <div key={lIdx} className="flex items-start gap-2 pr-2 my-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400 shrink-0 mt-2" />
-                    <span className="flex-1">{lTrim.replace(/^[•\-]\s*/, '')}</span>
-                  </div>
-                );
-              }
-              return (
-                <p key={lIdx} className="leading-relaxed whitespace-pre-line">
-                  {line}
-                </p>
-              );
-            })}
-          </div>
-        );
-      })}
-    </div>
-  );
-};
 
 interface ChatInterfaceProps {
   messages: ChatMessage[];
@@ -328,7 +255,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     )}
 
                     {finalContent && (
-                      <FormattedMessage content={finalContent} isPersian={isPersian} />
+                      <MathRenderer content={finalContent} isPersian={isPersian} />
                     )}
                   </div>
                 );

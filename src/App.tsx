@@ -160,12 +160,13 @@ export function App() {
     }
   };
 
-  // Dispatch message to AI (with optional single or multiple images)
+  // Dispatch message to AI (with optional single or multiple images and binary blobs)
   const handleSendMessage = async (
     text: string,
     attachments?: MessageAttachment[],
     imageDataUrl?: string,
-    imageDataUrls?: string[]
+    imageDataUrls?: string[],
+    imageBlobs?: (Blob | File)[]
   ) => {
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const isPersian = /[\u0600-\u06FF]/.test(text);
@@ -240,7 +241,9 @@ export function App() {
         settings.selectedModelId,
         historyPayload,
         imageDataUrls,
-        userContext
+        userContext,
+        false,
+        imageBlobs
       );
       const activeModelMeta = getAiModelById(settings.selectedModelId);
       const assistantMessage: ChatMessage = {

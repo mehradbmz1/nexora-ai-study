@@ -377,11 +377,20 @@ export function useVoiceEngine(
 
         // Start MediaRecorder for hardware audio capture
         try {
-          const mimeType = MediaRecorder.isTypeSupported('audio/webm')
-            ? 'audio/webm'
-            : MediaRecorder.isTypeSupported('audio/mp4')
-            ? 'audio/mp4'
-            : '';
+          const candidates = [
+            'audio/webm;codecs=opus',
+            'audio/webm',
+            'audio/mp4',
+            'audio/aac',
+            'audio/ogg;codecs=opus'
+          ];
+          let mimeType = '';
+          for (const c of candidates) {
+            if (MediaRecorder.isTypeSupported(c)) {
+              mimeType = c;
+              break;
+            }
+          }
           const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
           mediaRecorderRef.current = recorder;
 

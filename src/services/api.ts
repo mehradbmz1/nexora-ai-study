@@ -176,7 +176,7 @@ export const ChatSyncService = {
     }
   },
 
-  // Direct AI chat & Multimodal Vision text reading with chosen Cloudflare model
+  // Direct AI chat & Multimodal Vision text reading via Multipart/FormData
   async sendToAI(
     prompt: string,
     imageDataUrl?: string,
@@ -185,13 +185,65 @@ export const ChatSyncService = {
     messages?: { role: string; content: string }[],
     imageDataUrls?: string[],
     user?: { firstName?: string; lastName?: string; email?: string; gradeLevel?: string },
-    isVoiceMode?: boolean
+    isVoiceMode?: boolean,
+    imageBlobs?: (Blob | File)[],
+    audioBlob?: Blob
   ) {
     try {
+      const formData = new FormData();
+      formData.append('prompt', prompt);
+      formData.append('curriculum', curriculum);
+      if (modelId) formData.append('modelId', modelId);
+      formData.append('isVoiceMode', isVoiceMode ? 'true' : 'false');
+      if (messages && messages.length > 0) {
+        formData.append('messages', JSON.stringify(messages));
+      }
+      if (user) {
+        formData.append('user', JSON.stringify(user));
+      }
+
+      // Attach binary image files
+      if (imageBlobs && imageBlobs.length > 0) {
+        imageBlobs.forEach((blob, idx) => {
+          const ext = blob.type === 'image/png' ? 'png' : 'jpg';
+          formData.append('images', blob, `image_${idx}.${ext}`);
+        });
+      } else if (imageDataUrls && imageDataUrls.length > 0) {
+        for (let i = 0; i < imageDataUrls.length; i++) {
+          const url = imageDataUrls[i];
+          try {
+            const res = await fetch(url);
+            const blob = await res.blob();
+            formData.append('images', blob, `image_${i}.jpg`);
+          } catch {
+            formData.append('imageDataUrls', url);
+          }
+        }
+      } else if (imageDataUrl) {
+        try {
+          const res = await fetch(imageDataUrl);
+          const blob = await res.blob();
+          formData.append('images', blob, 'image_0.jpg');
+        } catch {
+          formData.append('imageDataUrl', imageDataUrl);
+        }
+      }
+
+      if (audioBlob) {
+        const ext = audioBlob.type.includes('mp4') ? 'mp4' : 'webm';
+        formData.append('audio', audioBlob, `speech.${ext}`);
+      }
+
+      const headers: Record<string, string> = {};
+      const customKey = localStorage.getItem('nexora_gemini_api_key');
+      if (customKey) {
+        headers['x-gemini-key'] = customKey.trim();
+      }
+
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, imageDataUrl, imageDataUrls, curriculum, modelId, messages, user, isVoiceMode }),
+        headers,
+        body: formData,
       });
       const data = await res.json();
       return data;
@@ -203,15 +255,23 @@ export const ChatSyncService = {
     }
   },
 
-  // Transcribe recorded audio with Cloudflare Workers AI Whisper
+  // Transcribe recorded audio with FormData binary stream (Google Gemini or Cloudflare Whisper)
   async transcribeAudio(audioBlob: Blob): Promise<{ success: boolean; text?: string; error?: string }> {
     try {
-      const buffer = await audioBlob.arrayBuffer();
-      const bytes = Array.from(new Uint8Array(buffer));
+      const formData = new FormData();
+      const ext = audioBlob.type.includes('mp4') ? 'mp4' : 'webm';
+      formData.append('audio', audioBlob, `recording.${ext}`);
+
+      const headers: Record<string, string> = {};
+      const customKey = localStorage.getItem('nexora_gemini_api_key');
+      if (customKey) {
+        headers['x-gemini-key'] = customKey.trim();
+      }
+
       const res = await fetch('/api/ai/transcribe', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audio: bytes }),
+        headers,
+        body: formData,
       });
       const data = await res.json();
       return data;

@@ -11,15 +11,38 @@ import {
 import type { MessageAttachment } from '../types';
 import { ChatSyncService } from '../services/api';
 
+export interface AttachedImage {
+  blob: Blob;
+  previewUrl: string;
+  name: string;
+}
+
 interface ChatInputProps {
   onSendMessage: (
     text: string,
     attachments?: MessageAttachment[],
     imageDataUrl?: string,
-    imageDataUrls?: string[]
+    imageDataUrls?: string[],
+    imageBlobs?: (Blob | File)[]
   ) => void;
   onLaunchVoiceMode: () => void;
   isLoading: boolean;
+}
+
+// Multi-device audio MIME detector (Chrome, Firefox, Safari iOS)
+function getBestAudioMimeType(): string {
+  if (typeof MediaRecorder === 'undefined') return '';
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/aac',
+    'audio/ogg;codecs=opus'
+  ];
+  for (const c of candidates) {
+    if (MediaRecorder.isTypeSupported(c)) return c;
+  }
+  return '';
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({
@@ -29,7 +52,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 }) => {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
-  const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
 
@@ -107,12 +130,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm')
-        ? 'audio/webm'
-        : MediaRecorder.isTypeSupported('audio/mp4')
-        ? 'audio/mp4'
-        : '';
-
+      const mimeType = getBestAudioMimeType();
       const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
 
@@ -223,11 +241,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       }
     }
 
+    const previewUrls = attachedImages.map(img => img.previewUrl);
+    const imageBlobs = attachedImages.map(img => img.blob);
+
     onSendMessage(
       text.trim() || defaultPrompt,
       attachments.length > 0 ? attachments : undefined,
-      attachedImages[0] || undefined,
-      hasImages ? attachedImages : undefined
+      previewUrls[0] || undefined,
+      previewUrls.length > 0 ? previewUrls : undefined,
+      imageBlobs.length > 0 ? imageBlobs : undefined
     );
 
     setText('');
@@ -245,21 +267,29 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   };
 
-  // High-fidelity image optimization (enhances blurry photos, cleans text, and scales safely)
-  const optimizeImage = (file: File): Promise<string> => {
+  // High-fidelity image optimization: maintains min 1600px dimension and 0.88-0.90 quality
+  // so math exponents, subscripts, fractions, and chemical bonds remain crystal sharp
+  const optimizeImage = (file: File): Promise<AttachedImage> => {
     return new Promise((resolve) => {
       const reader = new FileReader();
       reader.onload = (e) => {
-        const dataUrl = e.target?.result as string;
-        if (!dataUrl) {
-          resolve('');
+        const rawUrl = e.target?.result as string;
+        if (!rawUrl) {
+          resolve({ blob: file, previewUrl: '', name: file.name });
           return;
         }
         const img = new Image();
         img.onload = () => {
-          const maxDim = 1024;
           let { width, height } = img;
-          if (width > maxDim || height > maxDim) {
+          const minDim = 1600;
+          const maxDim = 2400;
+
+          // If image is very small, scale up so subscripts are legible
+          if (width < minDim && height < minDim && width > 0 && height > 0) {
+            const scale = minDim / Math.min(width, height);
+            width = Math.round(width * Math.min(scale, 2.0));
+            height = Math.round(height * Math.min(scale, 2.0));
+          } else if (width > maxDim || height > maxDim) {
             if (width > height) {
               height = Math.round((height * maxDim) / width);
               width = maxDim;
@@ -268,26 +298,36 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               height = maxDim;
             }
           }
+
           const canvas = document.createElement('canvas');
           canvas.width = width;
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           if (!ctx) {
-            resolve(dataUrl);
+            resolve({ blob: file, previewUrl: rawUrl, name: file.name });
             return;
           }
+
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = 'high';
           ctx.fillStyle = '#FFFFFF';
           ctx.fillRect(0, 0, width, height);
           ctx.drawImage(img, 0, 0, width, height);
-          const compressed = canvas.toDataURL('image/jpeg', 0.82);
-          resolve(compressed);
+
+          const isPng = file.type === 'image/png';
+          const mimeType = isPng ? 'image/png' : 'image/jpeg';
+          const quality = isPng ? undefined : 0.88;
+
+          canvas.toBlob((blob) => {
+            const finalBlob = blob || file;
+            const previewUrl = canvas.toDataURL(mimeType, quality);
+            resolve({ blob: finalBlob, previewUrl, name: file.name });
+          }, mimeType, quality);
         };
-        img.onerror = () => resolve(dataUrl);
-        img.src = dataUrl;
+        img.onerror = () => resolve({ blob: file, previewUrl: rawUrl, name: file.name });
+        img.src = rawUrl;
       };
-      reader.onerror = () => resolve('');
+      reader.onerror = () => resolve({ blob: file, previewUrl: '', name: file.name });
       reader.readAsDataURL(file);
     });
   };
@@ -299,7 +339,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     for (const file of Array.from(files)) {
       if (file.type.startsWith('image/')) {
         const optimized = await optimizeImage(file);
-        if (optimized) {
+        if (optimized && optimized.previewUrl) {
           setAttachedImages(prev => [...prev, optimized]);
         }
       } else {
@@ -325,7 +365,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           if (file) {
             e.preventDefault();
             const optimized = await optimizeImage(file);
-            if (optimized) {
+            if (optimized && optimized.previewUrl) {
               setAttachedImages(prev => [...prev, optimized]);
             }
             break;
@@ -406,8 +446,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   className="relative group inline-block rounded-xl overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-950 shadow-xs"
                 >
                   <img
-                    src={img}
-                    alt={`Attached ${idx + 1}`}
+                    src={img.previewUrl}
+                    alt={img.name || `Attached ${idx + 1}`}
                     className="h-16 w-auto max-w-[120px] object-cover"
                   />
                   <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/75 text-[10px] text-white font-mono">

@@ -7,13 +7,27 @@ export interface Env {
   DB: D1Database;
   AI?: any;
   ASSETS?: { fetch: (req: Request | string) => Promise<Response> };
+  GEMINI_API_KEY?: string;
+  CF_AI_GATEWAY_URL?: string;
+  OPENAI_API_KEY?: string;
+}
+
+// Chunked conversion to avoid Maximum call stack size exceeded errors in V8
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.byteLength; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)));
+  }
+  return btoa(binary);
 }
 
 // Helper: CORS Headers
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-gemini-key',
 };
 
 function jsonResponse(data: any, status = 200) {
@@ -57,7 +71,15 @@ function generateToken(): string {
   return crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
 }
 
-// Clean and sanitize LLM outputs to remove cross-lingual token leaks and eliminate annoying asterisks
+// Strict Academic Olympiad and Konkoor Tutor System Instruction
+const ACADEMIC_SYSTEM_INSTRUCTION = `تو یک استاد برجسته، دقیق و المپیادی در دروس ریاضی، فیزیک، شیمی و زیست‌شناسی هستی. هنگام دریافت تصویر، صوت یا متن سوال طبق این مراحل عمل کن:
+۱. استخراج دقیق اطلاعات: ابتدا تمام جزئیات تصویر یا صورت سوال شامل ساختارهای شیمیایی، پیوندهای دوگانه و سه‌گانه، گروه‌های عاملی، اعداد، اندیس‌ها و متغیرها را با دقت بالا تحلیل کن.
+۲. حل گام‌به‌گام پیش از اعلام نتیجه: هرگز در خط اول بدون استدلال فقط شماره گزینه را نگو. ابتدا مسئله را گام‌به‌گام با استدلال علمی و فرمول‌های استاندارد حل کن.
+۳. فرمت‌بندی استاندارد فرمول‌ها: تمام فرمول‌های ریاضی، فیزیک و معادلات شیمیایی را حتماً داخل تگ‌های استاندارد LaTeX قرار بده (از $...$ برای فرمول‌های درون‌خطی و از $$...$$ برای فرمول‌های مستقل در خط جداگانه استفاده کن).
+۴. تحلیل تمام گزینه‌ها: در سوالات تستی، دلیل علمی رد شدن گزینه‌های نادرست و دلیل درستی گزینه هدف را به تفکیک توضیح بده و در انتها گزینه صحیح را به صورت کاملاً مشخص اعلام کن.
+۵. لحن و نگارش: پاسخ‌ها باید کاملاً به زبان فارسی روان، علمی، آموزشی و راست‌چین (RTL) باشند.`;
+
+// Clean and sanitize LLM outputs to remove cross-lingual token leaks while preserving LaTeX math ($$, $)
 function sanitizeAiResponse(raw: string, persian: boolean): string {
   if (!raw) return '';
   let s = raw;
@@ -65,15 +87,24 @@ function sanitizeAiResponse(raw: string, persian: boolean): string {
   // 1. Replace escaped multiplication asterisks (\* -> ×)
   s = s.replace(/\\\*/g, '×');
 
-  // 2. Eradicate markdown bold/italic asterisks completely (**text** -> text, *text* -> text)
-  s = s.replace(/\*{2,}/g, '');
-  s = s.replace(/(^|\n)\s*\*\s+/g, '$1• ');
-  s = s.replace(/\*/g, '');
+  // 2. Eradicate markdown asterisks only outside of LaTeX math blocks
+  const mathRegex = /(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$)/g;
+  const parts = s.split(mathRegex);
+  for (let i = 0; i < parts.length; i += 2) {
+    if (parts[i]) {
+      parts[i] = parts[i]
+        .replace(/\*{2,}/g, '')
+        .replace(/(^|\n)\s*\*\s+/g, '$1• ')
+        .replace(/\*/g, '');
+    }
+  }
+  s = parts.join('');
 
   if (persian) {
     // Replace Chinese homoglyphs
     s = s.replace(/作用/g, 'اثر');
     s = s.replace(/是的/g, 'بله');
+    s = s.replace(/لیکن/g, 'اما');
     s = s.replace(/但是/g, 'اما');
     s = s.replace(/因为/g, 'زیرا');
     s = s.replace(/所以/g, 'بنابراین');
@@ -109,7 +140,8 @@ async function searchAcademicSources(query: string, isPersian: boolean): Promise
     const searchUrl = `https://${lang}.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(searchTerm)}&limit=2&namespace=0&format=json&origin=*`;
 
     const res = await fetch(searchUrl, {
-      headers: { 'User-Agent': 'NexoraAIStudyPlatform/2.0' }
+      headers: { 'User-Agent': 'NexoraAIStudyPlatform/2.0' },
+      signal: AbortSignal.timeout(2000)
     });
     if (!res.ok) return [];
 
@@ -408,7 +440,9 @@ function normalizeModelId(modelId?: string): string {
       // 6. GET CLOUDFLARE AI MODELS LIST
       if (path === '/api/ai/models' && request.method === 'GET') {
         const models = [
-          { id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast', name: 'Meta Llama 3.3 70B Instruct', provider: 'Meta', isFree: true, isDefault: true },
+          { id: 'gemini-2.5-flash', name: 'Google Gemini 2.5 Flash', provider: 'Google', isFree: true, supportsVision: true, isDefault: true },
+          { id: 'gemini-2.5-pro', name: 'Google Gemini 2.5 Pro (Olympiad)', provider: 'Google', isFree: true, supportsVision: true },
+          { id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast', name: 'Meta Llama 3.3 70B Instruct', provider: 'Meta', isFree: true },
           { id: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', name: 'DeepSeek R1 Distill Qwen 32B', provider: 'DeepSeek', isFree: true },
           { id: '@cf/meta/llama-3.2-11b-vision-instruct', name: 'Meta Llama 3.2 11B Vision', provider: 'Meta', isFree: true, supportsVision: true },
           { id: '@cf/qwen/qwen2.5-coder-32b-instruct', name: 'Qwen 2.5 Coder 32B Instruct', provider: 'Alibaba Qwen', isFree: true },
@@ -419,15 +453,23 @@ function normalizeModelId(modelId?: string): string {
         return jsonResponse({ success: true, models });
       }
 
-      // 6b. SPEECH TO TEXT TRANSCRIBE (Cloudflare Workers AI Whisper)
+      // 6b. SPEECH TO TEXT TRANSCRIBE (Google Gemini Multimodal Audio or Cloudflare Whisper)
       if (path === '/api/ai/transcribe' && request.method === 'POST') {
-        let bytes: number[] = [];
         const contentType = request.headers.get('content-type') || '';
+        let audioBuffer: ArrayBuffer | null = null;
+        let audioMime = 'audio/webm';
 
-        if (contentType.includes('application/json')) {
+        if (contentType.includes('multipart/form-data')) {
+          const formData = await request.formData();
+          const file = (formData.get('audio') || formData.get('file')) as File | null;
+          if (file) {
+            audioBuffer = await file.arrayBuffer();
+            audioMime = file.type || 'audio/webm';
+          }
+        } else if (contentType.includes('application/json')) {
           const body = await request.json() as { audio?: number[]; audioBase64?: string };
           if (body.audio && Array.isArray(body.audio)) {
-            bytes = body.audio;
+            audioBuffer = new Uint8Array(body.audio).buffer;
           } else if (body.audioBase64) {
             const clean = body.audioBase64.replace(/^data:audio\/[a-z0-9-]+;base64,/, '');
             const binary = atob(clean);
@@ -435,19 +477,64 @@ function normalizeModelId(modelId?: string): string {
             for (let i = 0; i < binary.length; i++) {
               uint[i] = binary.charCodeAt(i);
             }
-            bytes = Array.from(uint);
+            audioBuffer = uint.buffer;
           }
         } else {
-          const buf = await request.arrayBuffer();
-          bytes = Array.from(new Uint8Array(buf));
+          audioBuffer = await request.arrayBuffer();
+          audioMime = contentType || 'audio/webm';
         }
 
-        if (bytes.length === 0) {
+        if (!audioBuffer || audioBuffer.byteLength === 0) {
           return jsonResponse({ success: false, error: 'No audio data received' }, 400);
         }
 
+        const geminiKey = request.headers.get('x-gemini-key') || env.GEMINI_API_KEY;
+
+        // 1. High-accuracy Persian speech transcription via Google Gemini Multimodal Audio
+        if (geminiKey) {
+          try {
+            const base64Audio = arrayBufferToBase64(audioBuffer);
+            const cleanMime = audioMime.split(';')[0] || 'audio/webm';
+            const geminiBase = env.CF_AI_GATEWAY_URL
+              ? env.CF_AI_GATEWAY_URL.replace(/\/+$/, '') + '/v1beta/models'
+              : 'https://generativelanguage.googleapis.com/v1beta/models';
+
+            const geminiRes = await fetch(`${geminiBase}/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                systemInstruction: {
+                  parts: [{ text: 'شما دستیار دقیق تبدیل صوت به متن فارسی هستید. تمام کلمات گفته‌شده را با املای درست، دقیق و بدون هیچ توضیح یا سلام اضافه‌ای بازنویسی کن. فقط متن گفتار را خروجی بده.' }]
+                },
+                contents: [
+                  {
+                    role: 'user',
+                    parts: [
+                      { text: 'لطفاً این فایل صوتی را به متن فارسی تبدیل کن:' },
+                      { inlineData: { mimeType: cleanMime, data: base64Audio } }
+                    ]
+                  }
+                ],
+                generationConfig: { temperature: 0.1, maxOutputTokens: 1000 }
+              })
+            });
+
+            if (geminiRes.ok) {
+              const data = await geminiRes.json() as any;
+              const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+              if (text) {
+                return jsonResponse({ success: true, text });
+              }
+            }
+          } catch (e) {
+            console.warn('Gemini audio transcription fallback:', e);
+          }
+        }
+
+        // 2. Fallback to Cloudflare Workers AI Whisper
         if (env.AI) {
           try {
+            const bytes = Array.from(new Uint8Array(audioBuffer));
             const aiRes = await env.AI.run('@cf/openai/whisper', {
               audio: bytes
             });
@@ -458,179 +545,346 @@ function normalizeModelId(modelId?: string): string {
           }
         }
 
-        return jsonResponse({ success: false, error: 'AI binding not available' }, 500);
+        return jsonResponse({ success: false, error: 'AI transcription binding not available' }, 500);
       }
 
-      // 7. CLOUDFLARE WORKERS AI CHAT / VISION RUNNER
+      // 7. UNIFIED MULTIMODAL AI CHAT & VISION RUNNER (Google Gemini 2.5 + Cloudflare Workers AI Fallback)
       if (path === '/api/ai/chat' && request.method === 'POST') {
-        const body = await request.json() as {
-          prompt?: string;
-          imageDataUrl?: string;
-          imageDataUrls?: string[];
-          curriculum?: string;
-          modelId?: string;
-          user?: { firstName?: string; lastName?: string; email?: string; gradeLevel?: string };
-          messages?: { role: 'user' | 'assistant'; content: string }[];
-          isVoiceMode?: boolean;
-        };
+        const contentType = request.headers.get('content-type') || '';
+        let prompt = '';
+        let curriculum = 'iran';
+        let rawModelId = '';
+        let isVoice = false;
+        let user: { firstName?: string; lastName?: string; email?: string; gradeLevel?: string } | undefined;
+        let messages: { role: 'user' | 'assistant'; content: string }[] | undefined;
 
-        const prompt = body.prompt || '';
-        const curriculum = body.curriculum || 'iran';
-        const isVoice = !!body.isVoiceMode;
-        const userGrade = body.user?.gradeLevel || '';
-        const rawModelId = body.modelId || (body.imageDataUrl || (body.imageDataUrls && body.imageDataUrls.length > 0)
-          ? '@cf/meta/llama-3.2-11b-vision-instruct'
-          : '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
-        const modelId = normalizeModelId(rawModelId);
+        interface ParsedMedia {
+          mimeType: string;
+          base64: string;
+          buffer?: ArrayBuffer;
+        }
+
+        const parsedImages: ParsedMedia[] = [];
+        let parsedAudio: ParsedMedia | null = null;
+
+        // A. Handle Multipart/FormData (Preferred: Zero payload bloat, high-fidelity binary)
+        if (contentType.includes('multipart/form-data')) {
+          const formData = await request.formData();
+          prompt = (formData.get('prompt') as string) || '';
+          curriculum = (formData.get('curriculum') as string) || 'iran';
+          rawModelId = (formData.get('modelId') as string) || '';
+          isVoice = formData.get('isVoiceMode') === 'true';
+
+          if (formData.has('user')) {
+            try { user = JSON.parse(formData.get('user') as string); } catch {}
+          }
+          if (formData.has('messages')) {
+            try { messages = JSON.parse(formData.get('messages') as string); } catch {}
+          }
+
+          // Extract all image files
+          const imageEntries = formData.getAll('images').concat(formData.getAll('image'));
+          for (const item of imageEntries) {
+            if (item instanceof File && item.size > 0) {
+              const buf = await item.arrayBuffer();
+              const base64 = arrayBufferToBase64(buf);
+              parsedImages.push({
+                mimeType: item.type || 'image/jpeg',
+                base64,
+                buffer: buf,
+              });
+            }
+          }
+
+          // Extract audio file if provided
+          const audioEntry = formData.get('audio') as File | null;
+          if (audioEntry && audioEntry.size > 0) {
+            const buf = await audioEntry.arrayBuffer();
+            parsedAudio = {
+              mimeType: audioEntry.type || 'audio/webm',
+              base64: arrayBufferToBase64(buf),
+              buffer: buf,
+            };
+          }
+        } else {
+          // B. Handle Application/JSON (Legacy Support)
+          const body = await request.json() as any;
+          prompt = body.prompt || '';
+          curriculum = body.curriculum || 'iran';
+          rawModelId = body.modelId || '';
+          isVoice = !!body.isVoiceMode;
+          user = body.user;
+          messages = body.messages;
+
+          const legacyUrls: string[] = [];
+          if (body.imageDataUrls && Array.isArray(body.imageDataUrls)) {
+            legacyUrls.push(...body.imageDataUrls.filter(Boolean));
+          } else if (body.imageDataUrl) {
+            legacyUrls.push(body.imageDataUrl);
+          }
+
+          for (const url of legacyUrls) {
+            const match = url.match(/^data:([^;]+);base64,(.+)$/);
+            if (match) {
+              parsedImages.push({
+                mimeType: match[1] || 'image/jpeg',
+                base64: match[2].trim(),
+              });
+            } else {
+              parsedImages.push({
+                mimeType: 'image/jpeg',
+                base64: url.trim(),
+              });
+            }
+          }
+        }
+
+        const userGrade = user?.gradeLevel || '';
         const isPersian =
           curriculum === 'iran' ||
           /[\u0600-\u06FF]/.test(prompt) ||
-          (body.messages && body.messages.some(m => /[\u0600-\u06FF]/.test(m.content)));
+          (messages && messages.some(m => /[\u0600-\u06FF]/.test(m.content)));
 
-        // Detect if user specifically asked for "فقط گزینه"
         const wantsOnlyOption = /فقط\s*گزینه|فقط\s*پاسخ|فقط\s*جواب|just\s*(the\s*)?option/i.test(prompt);
 
-        // Gather all image URLs provided
-        const allImages: string[] = [];
-        if (body.imageDataUrls && Array.isArray(body.imageDataUrls)) {
-          allImages.push(...body.imageDataUrls.filter(Boolean));
-        } else if (body.imageDataUrl) {
-          allImages.push(body.imageDataUrl);
-        }
-
-        // Live Academic References Search (skip in voice mode or short conversational greetings)
+        // Academic Reference Search
         const isGreetingOrShort = /^(سلام|درود|خوبی|چطوری|صبح بخیر|عصر بخیر|سلام علیکم|hello|hi|hey)[\s!.,؟]*$/i.test(prompt.trim()) || prompt.trim().length < 3;
         const academicSources = (isVoice || isGreetingOrShort) ? [] : await searchAcademicSources(prompt, isPersian);
         let academicContext = '';
         if (academicSources.length > 0) {
           academicContext = `\n\n### مراجع علمی و مستندات یافت‌شده برای این موضوع:\n` +
             academicSources.map(s => `- ${s.title}: ${s.snippet}`).join('\n') +
-            `\n(از این مراجع علمی در راستی‌آزمایی، اثبات دقیق و ذکر دلیل علمی پاسخ خود استفاده کن و به هیچ وجه از ستاره در متن استفاده نکن.)`;
+            `\n(از این مراجع علمی در راستی‌آزمایی، اثبات دقیق و ذکر دلیل علمی پاسخ خود استفاده کن.)`;
         }
 
+        // Construct System Instruction based on mode
+        let activeSystemPrompt = ACADEMIC_SYSTEM_INSTRUCTION;
+        if (isVoice) {
+          activeSystemPrompt = isPersian
+            ? `شما «نکسورا» در یک گفتگوی صوتی زنده (Voice Call) با دانش‌آموز هستید.
+دستورالعمل‌های حیاتی برای مکالمه صوتی بدون باگ:
+۱. فقط و دقیقاً نسبت به همان سوالی که کاربر صوتی پرسیده پاسخ کوتاه، مستقیم و محاوره‌ای در ۲ تا ۳ جمله روان بده.
+۲. از زیاده‌گویی، مقدمه‌چینی، سخنرانی طولانی یا پاسخ‌های کش‌دار اکیداً خودداری کن تا خوانش صوتی سریع و طبیعی باشد.
+۳. به هیچ وجه از علائم ستاره (* یا **)، فرمول‌های طولانی چندخطی یا جداول استفاده نکن.
+۴. به مکالمات قبلی همین چت وفادار بمان.`
+            : `You are Nexora in a live oral voice call. Answer directly, concisely, and conversationally in 2-3 short sentences. No asterisks, formulas, or long lists. Stay strictly on the current conversation topic.`;
+        } else if (wantsOnlyOption) {
+          activeSystemPrompt += `\nکاربر صریحاً خواسته است که «فقط گزینه» مشخص شود. محاسبات و استدلال را در ذهن انجام بده، سپس فقط گزینه را اعلام کن: گزینه صحیح: گزینه [شماره]`;
+        }
+
+        if (academicContext) {
+          activeSystemPrompt += academicContext;
+        }
+
+        // Follow-ups & citations template
+        const citations = isVoice
+          ? []
+          : (academicSources.length > 0
+            ? academicSources.map(s => ({
+                title: s.title,
+                url: s.url,
+                source: isPersian ? 'دانشنامه علمی' : 'Academic Reference'
+              }))
+            : (isGreetingOrShort
+              ? []
+              : (isPersian ? [
+                  { title: 'کتاب‌های درسی رسمی آموزش و پرورش', url: 'http://chap.sch.ir', source: 'آموزش و پرورش' },
+                  { title: 'شبکه ملی رشد', url: 'https://roshd.ir', source: 'رشد' },
+                  { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
+                ] : [])));
+
+        const followUps = isPersian ? [
+          'می‌توانی یک سوال تستی چهارگزینه‌ای از این مبحث بپرسی؟',
+          'یک سوال تشریحی مفهومی از من بپرس تا یادگیری‌ام را بسنجم',
+          'یک روش دوم یا راه میان‌بر تستی برای این مسئله بگو'
+        ] : [
+          'Test my understanding with a multiple-choice question',
+          'Ask me a conceptual practice question',
+          'Can you solve this using an alternative method?'
+        ];
+
+        // 1. PRIMARY ENGINE: Google Gemini 2.5 API (Vision, Audio & Academic Reasoning)
+        const geminiKey = request.headers.get('x-gemini-key') || env.GEMINI_API_KEY;
+
+        if (geminiKey) {
+          try {
+            const targetModel = rawModelId.includes('pro') ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+            const geminiBase = env.CF_AI_GATEWAY_URL
+              ? env.CF_AI_GATEWAY_URL.replace(/\/+$/, '') + '/v1beta/models'
+              : 'https://generativelanguage.googleapis.com/v1beta/models';
+
+            const geminiContents: any[] = [];
+
+            // Add previous conversational history turns
+            if (messages && Array.isArray(messages)) {
+              for (const m of messages.slice(-16)) {
+                geminiContents.push({
+                  role: m.role === 'assistant' ? 'model' : 'user',
+                  parts: [{ text: m.content }]
+                });
+              }
+            }
+
+            // Construct current user message parts
+            const currentParts: any[] = [];
+            if (prompt.trim()) {
+              currentParts.push({ text: prompt });
+            } else if (parsedImages.length > 0) {
+              currentParts.push({ text: 'لطفاً این تصویر را با دقت بررسی و گام‌به‌گام با فرمول‌های دقیق LaTeX حل کن.' });
+            }
+
+            for (const img of parsedImages) {
+              currentParts.push({
+                inlineData: {
+                  mimeType: img.mimeType,
+                  data: img.base64
+                }
+              });
+            }
+
+            if (parsedAudio) {
+              currentParts.push({
+                inlineData: {
+                  mimeType: parsedAudio.mimeType,
+                  data: parsedAudio.base64
+                }
+              });
+            }
+
+            geminiContents.push({
+              role: 'user',
+              parts: currentParts
+            });
+
+            const isStreamRequested = url.searchParams.get('stream') === 'true' ||
+              request.headers.get('accept')?.includes('text/event-stream');
+
+            if (isStreamRequested) {
+              const streamRes = await fetch(`${geminiBase}/${targetModel}:streamGenerateContent?alt=sse&key=${geminiKey}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  systemInstruction: {
+                    parts: [{ text: activeSystemPrompt }]
+                  },
+                  contents: geminiContents,
+                  generationConfig: {
+                    temperature: 0.35,
+                    maxOutputTokens: isVoice ? 350 : 4096
+                  }
+                })
+              });
+
+              if (streamRes.ok && streamRes.body) {
+                return new Response(streamRes.body, {
+                  headers: {
+                    ...corsHeaders,
+                    'Content-Type': 'text/event-stream; charset=utf-8',
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                  }
+                });
+              }
+            }
+
+            // Standard JSON Request
+            const genRes = await fetch(`${geminiBase}/${targetModel}:generateContent?key=${geminiKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                systemInstruction: {
+                  parts: [{ text: activeSystemPrompt }]
+                },
+                contents: geminiContents,
+                generationConfig: {
+                  temperature: 0.35,
+                  maxOutputTokens: isVoice ? 350 : 4096
+                }
+              })
+            });
+
+            if (genRes.ok) {
+              const gData = await genRes.json() as any;
+              const rawText = gData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+              if (rawText) {
+                const content = sanitizeAiResponse(rawText, isPersian);
+                return jsonResponse({
+                  success: true,
+                  content,
+                  modelId: targetModel,
+                  modelName: targetModel.includes('pro') ? 'Google Gemini 2.5 Pro (Olympiad STEM)' : 'Google Gemini 2.5 Flash (Academic STEM Pro)',
+                  citations,
+                  followUps
+                });
+              }
+            }
+          } catch (geminiErr) {
+            console.warn('Gemini upstream failed, falling back to Workers AI:', geminiErr);
+          }
+        }
+
+        // 2. FALLBACK ENGINE: Cloudflare Workers AI
         if (env.AI) {
-          if (allImages.length > 0) {
+          if (parsedImages.length > 0) {
             try {
               const ocrResults: string[] = [];
 
-              for (let i = 0; i < allImages.length; i++) {
-                const imgData = allImages[i];
+              for (let i = 0; i < parsedImages.length; i++) {
+                const img = parsedImages[i];
                 let bytes: number[] = [];
-                try {
-                  const base64Part = imgData.includes(',') ? imgData.split(',')[1] : imgData;
-                  const cleanBase64 = base64Part.trim().replace(/[\r\n\s]/g, '').replace(/-/g, '+').replace(/_/g, '/');
-                  const padLen = (4 - (cleanBase64.length % 4)) % 4;
-                  const padded = cleanBase64 + '='.repeat(padLen);
-                  const binaryString = atob(padded);
+
+                if (img.buffer) {
+                  bytes = Array.from(new Uint8Array(img.buffer));
+                } else if (img.base64) {
+                  const binaryString = atob(img.base64);
                   bytes = new Array<number>(binaryString.length);
                   for (let j = 0; j < binaryString.length; j++) {
                     bytes[j] = binaryString.charCodeAt(j);
                   }
-                } catch (e) {
-                  console.error('Base64 decode error:', e);
-                  continue;
                 }
 
                 if (bytes.length === 0) continue;
 
-                // High-precision direct Persian solving prompt for Meta Llama 3.2 11B Vision
                 const directVisionPrompt = isPersian
-                  ? `شما «نکسورا» هستید؛ استاد و هوش مصنوعی بینایی و حل مسائل درسی.
-این تصویر را با نهایت دقت و قدرت تفکیک بررسی کن (حتی اگر تصویر بی‌کیفیت، کم‌نور، تار، کج یا دست‌نویس است، با تمام توان تمام کاراکترها، حروف، فرمول‌ها و اشکال را بازخوانی کن):
-
-قوانین حیاتی و الزامی:
-۱. تشخیص نوع تصویر:
-- اگر تصویر حاوی سوال، مسئله، تمرین، تست یا آزمون درسی است:
-  الف) صورت کامل سوال و گزینه‌ها را بخوان.
-  ب) محاسبات و فرمول‌ها را گام‌به‌گام و تشریحی به زبان فارسی حل کن.
-  ج) در پایان بنویس: پاسخ نهایی: [پاسخ یا گزینه صحیح]
-- اگر تصویر سوال درسی نیست (مثلاً عکس یک شیء، چهره، نقاشی، نمودار بدون سوال یا تصویر عمومی):
-  الف) صریحاً و قاطعانه در خط اول اعلام کن: «این تصویر حاوی سوال یا مسئله درسی نیست.»
-  ب) سپس محتویات و آنچه در تصویر مشاهده می‌کنی را با دقت به فارسی شرح بده.
-  ج) اکیداً از ساختن تست‌های فرضی، پرسیدن سوال یا خودسرانه امتحان گرفتن از کاربر خودداری کن.
-
-۲. اکیداً از به کار بردن علامت ستاره (*) در سراسر متن خودداری کن.
-${prompt ? `درخواست دانش‌آموز: ${prompt}` : ''}`
-                  : `You are Nexora AI Vision Tutor. Analyze this image carefully, even if it is blurry or low quality:
-1. If this image contains an academic problem or question, solve it step-by-step with formulas and state the final answer.
-2. If this image is NOT a study problem or question, clearly state: "This image does not contain an academic question." and simply describe what is in the image. Do NOT invent or ask random test questions.
-3. Do not use asterisks (*).
-${prompt ? `User request: ${prompt}` : ''}`;
+                  ? `${ACADEMIC_SYSTEM_INSTRUCTION}\n\nتصویر را با نهایت دقت بررسی و حل کن:\n${prompt || 'مسئله درسی را حل کن.'}`
+                  : `Analyze this image carefully. Solve academic problems step-by-step with LaTeX formulas.\n${prompt || 'Solve the question.'}`;
 
                 let transcribed = '';
                 try {
                   const visionRes = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
                     prompt: directVisionPrompt,
                     image: bytes,
-                    max_tokens: 1500,
+                    max_tokens: 1800,
                   });
                   transcribed = (visionRes as any)?.response || '';
                 } catch (err: any) {
                   console.warn('Vision primary model error:', err);
                   transcribed = isPersian
-                    ? 'تصویر با موفقیت دریافت شد. در حال حاضر تصویر قابل پردازش نبود، لطفاً عکس واضح‌تر و مستقیم‌تری از سوال ارسال فرمایید.'
-                    : 'The image could not be processed. Please provide a clearer image.';
+                    ? 'تصویر دریافت شد. لطفاً در صورت امکان عکس مستقیم‌تر و واضح‌تری ارسال فرمایید.'
+                    : 'The image could not be processed.';
                 }
 
                 if (transcribed) {
-                  ocrResults.push(allImages.length > 1 ? `[تصویر ${i + 1}]:\n${transcribed}` : transcribed);
+                  ocrResults.push(parsedImages.length > 1 ? `[تصویر ${i + 1}]:\n${transcribed}` : transcribed);
                 }
               }
 
               let combinedResult = ocrResults.join('\n\n---\n\n');
-
               if (!combinedResult.trim()) {
                 combinedResult = isPersian
                   ? 'تصویری برای پردازش بازخوانی نشد. لطفاً مجدداً عکس خود را ارسال کنید.'
-                  : 'No content could be extracted from the image. Please re-upload.';
-              }
-
-              // If user specifically asked for "فقط گزینه", run a fast 70B distillation
-              if (wantsOnlyOption && combinedResult.length > 20) {
-                try {
-                  const solverRes = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
-                    messages: [
-                      { role: 'system', content: 'بر اساس این متن و حل مسئله، فقط شماره گزینه صحیح را بدون هیچ توضیح اضافی و بدون ستاره بنویس: گزینه صحیح: گزینه [شماره]' },
-                      { role: 'user', content: combinedResult }
-                    ],
-                    max_tokens: 60,
-                  });
-                  const opt = (solverRes as any)?.response;
-                  if (opt && opt.trim()) combinedResult = opt.trim();
-                } catch {}
+                  : 'No content could be extracted from the image.';
               }
 
               const content = sanitizeAiResponse(combinedResult, isPersian);
 
-              const citations = academicSources.length > 0
-                ? academicSources.map(s => ({
-                    title: s.title,
-                    url: s.url,
-                    source: isPersian ? 'دانشنامه علمی' : 'Academic Reference'
-                  }))
-                : (isPersian ? [
-                    { title: 'کتاب‌های درسی رسمی آموزش و پرورش', url: 'http://chap.sch.ir', source: 'آموزش و پرورش' },
-                    { title: 'شبکه ملی رشد', url: 'https://roshd.ir', source: 'رشد' },
-                    { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
-                  ] : [
-                    { title: 'Stanford Encyclopedia of Science', url: 'https://plato.stanford.edu', source: 'Stanford' }
-                  ]);
-
               return jsonResponse({
                 success: true,
                 content,
-                modelId: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-                modelName: 'Nexora Flagship Vision + Llama 3.3 70B',
+                modelId: '@cf/meta/llama-3.2-11b-vision-instruct',
+                modelName: 'Meta Llama 3.2 11B Vision',
                 citations,
-                followUps: isPersian ? [
-                  'می‌توانی یک سوال تستی چهارگزینه‌ای از این مبحث بپرسی؟',
-                  'یک سوال تشریحی مفهومی از من بپرس تا یادگیری‌ام را بسنجم',
-                  'یک روش دوم یا راه میان‌بر تستی برای این مسئله بگو'
-                ] : [
-                  'Test my understanding with a multiple-choice question',
-                  'Ask me a conceptual practice question',
-                  'Can you solve this using an alternative method?'
-                ]
+                followUps
               });
             } catch (err: any) {
               return jsonResponse({
@@ -639,83 +893,19 @@ ${prompt ? `User request: ${prompt}` : ''}`;
               }, 500);
             }
           } else {
-            // Conversational memory: incorporate previous turns
-            const userGreeting = body.user?.firstName
-              ? `دانش‌آموز گرامی: «${body.user.firstName} ${body.user.lastName || ''}»`
-              : '';
-
-            const isAskingForQuiz = /سوال\s*(بپرس|طرح\s*کن|مطرح\s*کن|بده)|تست\s*(بپرس|طرح\s*کن|بزن|بده)|کوئیز\s*(بگیر|بپرس)|از\s*من\s*سوال|امتحان\s*بگیر|ask\s*(me\s*)?(a\s*)?question/i.test(prompt);
-
-            const reasoningDirective = wantsOnlyOption
-              ? `کاربر صریحاً خواسته است که «فقط گزینه» مشخص شود.
-الزام حیاتی ضدباگ:
-۱. درستی سوال و تمامی فرمول‌ها و محاسبات را در ذهن خود با بالاترین دقت علمی چک و راستی‌آزمایی کن تا هیچ باگ یا اشتباهی در گزینه رخ ندهد.
-۲. بدون هیچ‌گونه توضیح اضافی، اطاله کلام، مقدمه‌چینی یا آوردن مراحل و بدون استفاده از هرگونه ستاره (* یا **)، مستقیماً و فقط گزینه صحیح را اعلام نما:
-گزینه صحیح: گزینه [شماره گزینه]`
-              : `الزام حیاتی علمی، استدلالی و جلوگیری از باگ:
-۱. برای هر پاسخ، حتماً «دلیل علمی»، «اثبات فرمولی»، «محاسبات گام‌به‌گام» و «علت رد سایر گزینه‌ها» را به طور دقیق تشریح کن تا پاسخ کاملاً مستدل، مستند و اثبات‌پذیر باشد و هیچ باگی نداشته باشد.
-۲. از ارائه پاسخ‌های شتاب‌زده یا بدون دلیل اکیداً خودداری کن.
-۳. اکیداً از به کار بردن علامت ستاره (* یا **) در سراسر متن خودداری کن. به جای آن، عنوان‌ها را ساده و تمیز بنویس.
-۴. در پایان پس از اثبات کامل، گزینه صحیح یا پاسخ نهایی را به صورت ساده و شفاف اعلام کن:
-پاسخ نهایی: [پاسخ]`;
-
-            let systemPrompt = '';
-            if (isVoice) {
-              systemPrompt = isPersian
-                ? `شما «نکسورا» در یک گفتگوی صوتی زنده (Voice Call) با دانش‌آموز هستید.
-دستورالعمل‌های حیاتی برای مکالمه صوتی بدون باگ:
-۱. فقط و دقیقاً نسبت به همان سوالی که کاربر به صورت صوتی پرسیده است پاسخ کوتاه، مستقیم و محاوره‌ای بده.
-۲. از زیاده‌گویی، مقدمه‌چینی، سخنرانی طولانی یا پاسخ‌های کش‌دار اکیداً خودداری کن؛ پاسخ باید حداکثر ۲ تا ۳ جمله کوتاه، روان و شبیه یک مکالمه واقعی باشد تا خوانش صوتی سریع و طبیعی باشد.
-۳. به هیچ وجه از علائم ستاره (* یا **)، فرمول‌های طولانی چندخطی، جداول یا فهرست‌های شماره‌دار استفاده نکن.
-۴. به مکالمات قبلی همین چت وفادار بمان و تا زمانی که کاربر نخواسته، از موضوع چت خارج نشو.`
-                : `You are Nexora in a live oral voice call.
-Answer directly, concisely, and conversationally in 2-3 short sentences.
-Only answer specifically what was asked. No asterisks, formulas, or long lists. Stay strictly on the current conversation topic.`;
-            } else {
-              systemPrompt = isPersian
-                ? `شما «نکسورا» (Nexora) هستید؛ یک استاد و معلم خصوصی دانشمند، بسیار مسلط، دقیق، شکیبا و صمیمی.
-${userGreeting ? `شما با ${userGreeting} گفتگو می‌کنید.` : ''} ${userGrade ? `(پایه تحصیلی: ${userGrade})` : ''}
-${academicContext}
-
-دستورالعمل‌های حیاتی:
-۱. زبان پاسخ: تمام پاسخ‌های شما باید ۱۰۰٪ به زبان فارسی رسمی، بسیار روان، شیوا، علمی، سلیس و کاملاً طبیعی با رسم‌الخط استاندارد فارسی باشد. اکیداً از به کار بردن کاراکترهای چینی، لغات اسپانیایی یا کلمات انگلیسی در میان متن فارسی خودداری کن.
-۲. اکیداً از به کار بردن هرگونه علامت ستاره (* یا **) در سراسر متن خودداری کن. عناوین و گزینه‌ها را به صورت متن تمیز و ساده بنویس.
-۳. ${reasoningDirective}
-۴. توضیحات کامل و عمیق: پاسخ‌ها را خلاصه یا ناقص رها نکن. برای هر پرسش، مفاهیم پایه‌ای، تعاریف علمی، فرمول‌های مرتبط، مثال‌های روشن و نتیجه‌گیری دقیق را شرح بده تا موضوع به شکل عمیق درک شود.
-۵. وفاداری به موضوع و حافظه چت: تمام پیام‌های قبلی این گفتگو را به دقت در نظر داشته باش. پاسخ‌های جدید باید دقیقاً بر پایه مباحث و درس‌هایی باشد که در همین گفتگو مطرح شده است و تا زمانی که کاربر نخواسته، از موضوع اصلی چت خارج نشو.
-۶. ${isAskingForQuiz ? `طرح سوال و آزمون بر اساس محتوای چت (درخواست صریح کاربر):
-کاربر از شما خواسته است که سوال یا تست بپرسید:
-- سوال را دقیقاً و منحصراً از همان موضوع و مبحثی که در پیام‌های قبلی همین گفتگو مطرح شد طرح کن.
-- سوال باید کاملاً منطقی، آموزشی و متناسب با پایه تحصیلی دانش‌آموز (${userGrade || 'پایه تحصیلی کاربر'}) باشد.
-- صورت سوال و گزینه‌ها را دقیق مطرح کن و از کاربر بخواه پاسخ دهد تا یادگیری‌اش سنجیده شود. هرگز پاسخ و گزینه درست را در همان پیام اول لو نده تا کاربر خودش فکر کند و پاسخ دهد!` : `عدم تحمیل آزمون تستی خودسرانه: هرگز به صورت ناخواسته سوال تستی مطرح نکنید، مگر اینکه کاربر صریحاً بخواهد. در پایان درس، فقط در صورت لزوم محترمانه پیشنهاد دهید:
-«💡 آیا مایلید برای سنجش تسلط شما بر این مبحث، یک تست یا سوال مفهومی از همین درس بپرسم؟»`}
-۷. انطباق با مقطع و پایه تحصیلی:
-سطح دشواری مباحث، فرمول‌ها و شیوه تدریس را با مقطع و پایه تحصیلی دانش‌آموز (${userGrade || 'متوسطه دوم / کنکور'}) تطبیق بده. اگر پایه دانش‌آموز هنوز مشخص نیست و کاربر درباره مسائل کلی صحبت می‌کند، در فرصتی مناسب بپرس که کلاس چندم است تا محتوا دقیقاً منطبق بر کتاب‌های درسی همان پایه ارائه شود.`
-                : `You are Nexora AI, a world-class academic study assistant.
-${body.user?.firstName ? `Student: ${body.user.firstName} ${body.user.lastName || ''}` : ''} ${userGrade ? `(Grade: ${userGrade})` : ''}
-${wantsOnlyOption ? 'The student wants ONLY the correct option. Verify all calculations rigorously in your internal reasoning, then output ONLY: Correct Option: Option [X] (without asterisks)' : 'Provide rigorous step-by-step reasoning with formulas explaining WHY the answer is correct without using asterisks.'}
-Rules:
-1. Deliver articulate, comprehensive, and step-by-step academic explanations in English without asterisks.
-2. Solve problems step-by-step with formulas and clearly state the final answer without asterisks.
-3. Retain conversational memory across previous turns within this session. Stick strictly to the conversation topic.
-4. If the student asks for a question or quiz, generate a logical question from the active chat's subject matter.`;
-            }
-
+            // Text Conversation
             const llmMessages: { role: string; content: string }[] = [
-              { role: 'system', content: systemPrompt }
+              { role: 'system', content: activeSystemPrompt }
             ];
 
-            if (body.messages && Array.isArray(body.messages)) {
-              // Take up to last 20 messages for deep conversational memory
-              const recent = body.messages.slice(-20);
-              for (const m of recent) {
+            if (messages && Array.isArray(messages)) {
+              for (const m of messages.slice(-16)) {
                 if (m.role === 'user' || m.role === 'assistant') {
                   llmMessages.push({ role: m.role, content: m.content });
                 }
               }
             }
 
-            // Ensure current prompt is present as the final user message
             const lastMsg = llmMessages[llmMessages.length - 1];
             if (!lastMsg || lastMsg.role !== 'user' || lastMsg.content !== prompt) {
               if (prompt.trim()) {
@@ -723,45 +913,20 @@ Rules:
               }
             }
 
-            const aiRes = await env.AI.run(modelId, {
+            const chosenModel = normalizeModelId(rawModelId || '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
+            const aiRes = await env.AI.run(chosenModel, {
               messages: llmMessages,
-              max_tokens: isVoice ? 180 : (wantsOnlyOption ? 100 : 3500)
+              max_tokens: isVoice ? 180 : (wantsOnlyOption ? 100 : (isGreetingOrShort ? 300 : 2500))
             });
 
             const rawContent = aiRes?.response || (isPersian ? 'پاسخ دریافت گردید.' : 'Response received.');
             const content = sanitizeAiResponse(rawContent, isPersian);
 
-            // Generate smart, contextually-relevant follow-up prompts
-            const followUps = isPersian ? [
-              'می‌توانی یک سوال تستی چهارگزینه‌ای از این مبحث بپرسی؟',
-              'یک سوال تشریحی مفهومی از من بپرس تا یادگیری‌ام را بسنجم',
-              'یک مثال کاربردی‌تر از این موضوع بزن'
-            ] : [
-              'Test my understanding with a multiple-choice question',
-              'Ask me a conceptual practice question',
-              'Can you give another real-world example?'
-            ];
-
-            const citations = isVoice
-              ? []
-              : (academicSources.length > 0
-                ? academicSources.map(s => ({
-                    title: s.title,
-                    url: s.url,
-                    source: isPersian ? 'دانشنامه علمی' : 'Academic Reference'
-                  }))
-                : (isGreetingOrShort
-                  ? []
-                  : (isPersian ? [
-                      { title: 'کتاب‌های درسی رسمی آموزش و پرورش', url: 'http://chap.sch.ir', source: 'آموزش و پرورش' },
-                      { title: 'شبکه ملی رشد', url: 'https://roshd.ir', source: 'رشد' },
-                      { title: 'سازمان سنجش آموزش کشور', url: 'https://sanjesh.org', source: 'سنجش' }
-                    ] : [])));
-
             return jsonResponse({
               success: true,
               content,
-              modelId,
+              modelId: chosenModel,
+              modelName: 'Meta Llama 3.3 70B Instruct',
               citations,
               followUps
             });
@@ -771,7 +936,7 @@ Rules:
         return jsonResponse({
           success: true,
           content: 'پاسخ هوش مصنوعی نکسورا پردازش گردید.',
-          modelId
+          modelId: '@cf/meta/llama-3.3-70b-instruct-fp8-fast'
         });
       }
 

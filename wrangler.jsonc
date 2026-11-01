@@ -18,5 +18,10 @@
   ],
   "ai": {
     "binding": "AI"
+  },
+  "vars": {
+    "GEMINI_API_KEY": "",
+    "CF_AI_GATEWAY_URL": ""
   }
 }
+

@@ -82,3 +82,32 @@
 .animate-float-subtle {
   animation: float-subtle 6s ease-in-out infinite;
 }
+
+/* KaTeX and Mathematical Equation Styling for Persian RTL Environments */
+.katex,
+.katex-display,
+.math-block,
+.math-inline {
+  direction: ltr !important;
+  unicode-bidi: isolate !important;
+  text-align: left !important;
+}
+
+.katex-display {
+  margin: 0.75rem 0 !important;
+  padding: 0.5rem 0.75rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: 0.75rem;
+  background-color: rgba(139, 92, 246, 0.04);
+}
+
+.dark .katex-display {
+  background-color: rgba(139, 92, 246, 0.08);
+}
+
+.math-inline {
+  display: inline-block;
+  vertical-align: middle;
+  padding: 0 0.2rem;
+}
